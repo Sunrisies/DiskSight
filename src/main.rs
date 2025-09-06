@@ -1,13 +1,21 @@
 use disk_sight::{human_readable_size, list_directory, Cli, FileEntry};
 use eframe::egui;
+use egui::ViewportBuilder;
 use egui_extras::{Column, TableBuilder};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 fn main() -> Result<(), eframe::Error> {
+    let viewport = ViewportBuilder {
+        title: Some("DiskSight - 目录文件大小查看器".to_string()),
+        app_id: Some("disk-sight".to_string()),
+        // 位置我需要居中，请问怎么计算？
+        position: Some(egui::Pos2::new(450.0, 200.0)),
+        ..Default::default()
+    };
     let options = eframe::NativeOptions {
-        // initial_window_size: Some(egui::vec2(800.0, 600.0)),
+        viewport, // 设置窗口
         ..Default::default()
     };
 
@@ -108,7 +116,7 @@ impl eframe::App for FileSizeViewer {
         let mut fonts = egui::FontDefinitions::default();
         fonts.font_data.insert(
             "SimHei".to_owned(),
-            egui::FontData::from_static(include_bytes!("../fonts/SimHei.ttf")).into(), // 需要提供中文字体文件
+            egui::FontData::from_static(include_bytes!("../fonts/SimHei.ttf")).into(),
         );
         fonts
             .families
@@ -126,97 +134,6 @@ impl eframe::App for FileSizeViewer {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("目录文件大小查看器");
-
-            // 路径选择和刷新控制
-            ui.horizontal(|ui: &mut egui::Ui| {
-                ui.label("当前目录:");
-                ui.text_edit_singleline(&mut self.current_path);
-
-                // 在加载时禁用按钮
-                let is_loading = self.is_loading.load(Ordering::SeqCst);
-
-                // 使用 egui 推荐的方式设置控件启用状态
-                let response = ui.add_enabled(!is_loading, egui::Button::new("浏览..."));
-                if response.clicked() {
-                    self.select_directory();
-                }
-
-                let response = ui.add_enabled(!is_loading, egui::Button::new("刷新"));
-                if response.clicked() {
-                    self.refresh_data();
-                }
-            });
-
-            ui.separator();
-
-            // 显示文件/目录表格
-            let entries = self.entries.lock().unwrap();
-            self.total_count = entries.len();
-            self.total_size = entries.iter().map(|e| e.size_raw).sum();
-
-            // 检查是否正在加载
-            let is_loading = self.is_loading.load(Ordering::SeqCst);
-
-            if is_loading {
-                // 显示加载指示器
-                ui.vertical_centered(|ui| {
-                    ui.add_space(100.0);
-                    ui.spinner();
-                    ui.add_space(10.0);
-                    ui.label("正在加载目录内容...");
-                });
-            } else if entries.is_empty() {
-                // 显示空目录消息
-                ui.vertical_centered(|ui| {
-                    ui.add_space(100.0);
-                    ui.label("目录为空或无法访问");
-                });
-            } else {
-                // 创建表格
-                egui::ScrollArea::both().show(ui, |ui| {
-                    TableBuilder::new(ui)
-                        .striped(true)
-                        .resizable(true)
-                        .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                        .column(Column::auto().at_least(40.0)) // 类型列
-                        .column(Column::auto().at_least(40.0)) // 权限列
-                        .column(Column::auto().at_least(80.0)) // 大小列
-                        .column(Column::remainder()) // 路径列
-                        .header(20.0, |mut header| {
-                            header.col(|ui| {
-                                ui.heading("类型");
-                            });
-                            header.col(|ui| {
-                                ui.heading("权限");
-                            });
-                            header.col(|ui| {
-                                ui.heading("大小");
-                            });
-                            header.col(|ui| {
-                                ui.heading("路径");
-                            });
-                        })
-                        .body(|mut body| {
-                            for entry in entries.iter() {
-                                body.row(20.0, |mut row| {
-                                    row.col(|ui| {
-                                        ui.label(entry.file_type.to_string());
-                                    });
-                                    row.col(|ui| {
-                                        ui.label(&entry.permissions);
-                                    });
-                                    row.col(|ui| {
-                                        ui.label(&entry.size_display);
-                                    });
-                                    row.col(|ui| {
-                                        ui.label(&entry.name);
-                                    });
-                                });
-                            }
-                        });
-                });
-            }
-
             ui.separator();
 
             // 显示统计信息
@@ -242,6 +159,251 @@ impl eframe::App for FileSizeViewer {
                     self.dark_mode = !self.dark_mode;
                 }
             });
+            ui.separator();
+
+            // 路径选择和刷新控制
+            ui.horizontal(|ui: &mut egui::Ui| {
+                ui.label("当前目录:");
+                ui.text_edit_singleline(&mut self.current_path);
+
+                // 在加载时禁用按钮
+                let is_loading = self.is_loading.load(std::sync::atomic::Ordering::SeqCst);
+
+                // 使用 egui 推荐的方式设置控件启用状态
+                let response = ui.add_enabled(!is_loading, egui::Button::new("浏览..."));
+                if response.clicked() {
+                    self.select_directory();
+                }
+
+                let response = ui.add_enabled(!is_loading, egui::Button::new("刷新"));
+                if response.clicked() {
+                    self.refresh_data();
+                }
+            });
+
+            ui.separator();
+
+            // 显示文件/目录表格
+            let entries = self.entries.lock().unwrap();
+            self.total_count = entries.len();
+            self.total_size = entries.iter().map(|e| e.size_raw).sum();
+
+            // 检查是否正在加载
+            let is_loading = self.is_loading.load(std::sync::atomic::Ordering::SeqCst);
+
+            if is_loading {
+                // 显示加载指示器
+                ui.vertical_centered(|ui| {
+                    ui.add_space(200.0);
+                    ui.spinner();
+                    ui.add_space(60.0);
+                    ui.label("正在加载目录内容...");
+                });
+            } else if entries.is_empty() {
+                // 显示空目录消息
+                ui.vertical_centered(|ui| {
+                    ui.add_space(300.0);
+                    ui.label("目录为空或无法访问");
+                });
+            } else {
+                // 创建表格
+                egui::ScrollArea::both()
+                    .max_height(300.0)
+                    .min_scrolled_height(300.0)
+                    .show(ui, |ui| {
+                        TableBuilder::new(ui)
+                            .striped(true)
+                            .resizable(true)
+                            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                            .column(Column::auto().at_least(40.0)) // 类型列
+                            .column(Column::auto().at_least(40.0)) // 权限列
+                            .column(Column::auto().at_least(80.0)) // 大小列
+                            .column(Column::remainder()) // 路径列
+                            .header(20.0, |mut header| {
+                                header.col(|ui| {
+                                    ui.heading("类型");
+                                });
+                                header.col(|ui| {
+                                    ui.heading("权限");
+                                });
+                                header.col(|ui| {
+                                    ui.heading("大小");
+                                });
+                                header.col(|ui| {
+                                    ui.heading("路径");
+                                });
+                            })
+                            .body(|mut body| {
+                                for entry in entries.iter() {
+                                    body.row(20.0, |mut row| {
+                                        row.col(|ui| {
+                                            ui.label(entry.file_type.to_string());
+                                        });
+                                        row.col(|ui| {
+                                            ui.label(&entry.permissions);
+                                        });
+                                        row.col(|ui| {
+                                            ui.label(&entry.size_display);
+                                        });
+                                        row.col(|ui| {
+                                            ui.label(&entry.name);
+                                        });
+                                    });
+                                }
+                            });
+                    });
+            }
+            // 下边留一些空间
+            // 显示程序名称、版本号和开发人员信息
+            ui.add_space(20.0); // 添加垂直空间
+            ui.horizontal(|ui| {
+                ui.label("程序名称: DiskSight".to_string());
+                ui.label("版本号: 1.0".to_string());
+                ui.label("开发人员: Sunrise".to_string());
+            });
         });
     }
 }
+
+// impl eframe::App for FileSizeViewer {
+//     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+//         // 设置中文字体
+//         let mut fonts = egui::FontDefinitions::default();
+//         fonts.font_data.insert(
+//             "SimHei".to_owned(),
+//             egui::FontData::from_static(include_bytes!("../fonts/SimHei.ttf")).into(), // 需要提供中文字体文件
+//         );
+//         fonts
+//             .families
+//             .get_mut(&egui::FontFamily::Proportional)
+//             .unwrap()
+//             .insert(0, "SimHei".to_owned());
+//         ctx.set_fonts(fonts);
+
+//         // 设置暗黑/浅色模式
+//         if self.dark_mode {
+//             ctx.set_visuals(egui::Visuals::dark());
+//         } else {
+//             ctx.set_visuals(egui::Visuals::light());
+//         }
+
+//         egui::CentralPanel::default().show(ctx, |ui| {
+//             ui.heading("目录文件大小查看器");
+//             // println!("位置{}", ui.min_rect());
+//             ui.separator();
+
+//             // 显示统计信息
+//             ui.horizontal(|ui| {
+//                 ui.label(format!(
+//                     "总数量: {} | 总大小: {}",
+//                     self.total_count,
+//                     human_readable_size(self.total_size)
+//                 ));
+//             });
+
+//             // 主题切换
+//             ui.horizontal(|ui| {
+//                 ui.label("主题:");
+//                 if ui
+//                     .button(if self.dark_mode {
+//                         "浅色模式"
+//                     } else {
+//                         "暗黑模式"
+//                     })
+//                     .clicked()
+//                 {
+//                     self.dark_mode = !self.dark_mode;
+//                 }
+//             });
+//             // 路径选择和刷新控制
+//             ui.horizontal(|ui: &mut egui::Ui| {
+//                 ui.label("当前目录:");
+//                 ui.text_edit_singleline(&mut self.current_path);
+
+//                 // 在加载时禁用按钮
+//                 let is_loading = self.is_loading.load(Ordering::SeqCst);
+
+//                 // 使用 egui 推荐的方式设置控件启用状态
+//                 let response = ui.add_enabled(!is_loading, egui::Button::new("浏览..."));
+//                 if response.clicked() {
+//                     self.select_directory();
+//                 }
+
+//                 let response = ui.add_enabled(!is_loading, egui::Button::new("刷新"));
+//                 if response.clicked() {
+//                     self.refresh_data();
+//                 }
+//             });
+
+//             ui.separator();
+
+//             // 显示文件/目录表格
+//             let entries = self.entries.lock().unwrap();
+//             self.total_count = entries.len();
+//             self.total_size = entries.iter().map(|e| e.size_raw).sum();
+
+//             // 检查是否正在加载
+//             let is_loading = self.is_loading.load(Ordering::SeqCst);
+
+//             if is_loading {
+//                 // 显示加载指示器
+//                 ui.vertical_centered(|ui| {
+//                     ui.add_space(100.0);
+//                     ui.spinner();
+//                     ui.add_space(10.0);
+//                     ui.label("正在加载目录内容...");
+//                 });
+//             } else if entries.is_empty() {
+//                 // 显示空目录消息
+//                 ui.vertical_centered(|ui| {
+//                     ui.add_space(100.0);
+//                     ui.label("目录为空或无法访问");
+//                 });
+//             } else {
+//                 // 创建表格
+//                 egui::ScrollArea::both().show(ui, |ui| {
+//                     TableBuilder::new(ui)
+//                         .striped(true)
+//                         .resizable(true)
+//                         .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+//                         .column(Column::auto().at_least(40.0)) // 类型列
+//                         .column(Column::auto().at_least(40.0)) // 权限列
+//                         .column(Column::auto().at_least(80.0)) // 大小列
+//                         .column(Column::remainder()) // 路径列
+//                         .header(20.0, |mut header| {
+//                             header.col(|ui| {
+//                                 ui.heading("类型");
+//                             });
+//                             header.col(|ui| {
+//                                 ui.heading("权限");
+//                             });
+//                             header.col(|ui| {
+//                                 ui.heading("大小");
+//                             });
+//                             header.col(|ui| {
+//                                 ui.heading("路径");
+//                             });
+//                         })
+//                         .body(|mut body| {
+//                             for entry in entries.iter() {
+//                                 body.row(20.0, |mut row| {
+//                                     row.col(|ui| {
+//                                         ui.label(entry.file_type.to_string());
+//                                     });
+//                                     row.col(|ui| {
+//                                         ui.label(&entry.permissions);
+//                                     });
+//                                     row.col(|ui| {
+//                                         ui.label(&entry.size_display);
+//                                     });
+//                                     row.col(|ui| {
+//                                         ui.label(&entry.name);
+//                                     });
+//                                 });
+//                             }
+//                         });
+//                 });
+//             }
+//         });
+//     }
+// }
