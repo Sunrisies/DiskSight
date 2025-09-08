@@ -10,12 +10,13 @@ fn main() -> Result<(), eframe::Error> {
     let viewport = ViewportBuilder {
         title: Some("DiskSight - 目录文件大小查看器".to_string()),
         app_id: Some("disk-sight".to_string()),
-        // 位置我需要居中，请问怎么计算？
-        position: Some(egui::Pos2::new(450.0, 200.0)),
+        position: None,
+        inner_size: Some(egui::Vec2::new(1000.0, 600.0)),
         ..Default::default()
     };
     let options = eframe::NativeOptions {
-        viewport, // 设置窗口
+        viewport,       // 设置窗口
+        centered: true, // 居中
         ..Default::default()
     };
 
@@ -34,6 +35,7 @@ struct FileSizeViewer {
     dark_mode: bool,
     last_refresh: std::time::Instant,
     is_loading: Arc<AtomicBool>, // 添加加载状态
+    cli_options: Cli,            // 添加 CLI 选项
 }
 
 impl Default for FileSizeViewer {
@@ -54,6 +56,17 @@ impl Default for FileSizeViewer {
             dark_mode: false,
             last_refresh: std::time::Instant::now(),
             is_loading,
+            cli_options: Cli {
+                file: None,
+                long_format: false,
+                human_readable: true, // 默认启用人类可读格式
+                all: false,
+                show_time: false,
+                parallel: true, // 默认启用并行计算
+                sort: true,     // 默认启用排序
+                name: None,
+                full_path: false,
+            },
         };
 
         viewer.refresh_data();
@@ -62,6 +75,8 @@ impl Default for FileSizeViewer {
 }
 
 impl FileSizeViewer {
+    // 在 new 函数中初始化 CLI 选项
+
     fn refresh_data(&mut self) {
         let path = self.current_path.clone();
         println!("Refreshing data for path: {}", path);
@@ -107,6 +122,55 @@ impl FileSizeViewer {
             self.current_path = path.display().to_string();
             self.refresh_data();
         }
+    }
+
+    fn render_cli_options_panel(&mut self, ui: &mut egui::Ui) {
+        // 使用分组框让选项区域更清晰
+        egui::Frame::group(ui.style())
+            .inner_margin(egui::Margin::symmetric(10, 8))
+            .show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.heading("显示格式");
+                    ui.add(egui::Checkbox::new(
+                        &mut self.cli_options.long_format,
+                        "长格式",
+                    ))
+                    .on_hover_text("显示详细文件信息");
+                    ui.add(egui::Checkbox::new(
+                        &mut self.cli_options.human_readable,
+                        "人性化大小",
+                    ))
+                    .on_hover_text("使用KB/MB/GB等单位显示文件大小");
+                    ui.add(egui::Checkbox::new(
+                        &mut self.cli_options.all,
+                        "显示隐藏文件",
+                    ))
+                    .on_hover_text("包括隐藏文件和系统文件");
+                    ui.add_space(16.0);
+
+                    ui.heading("显示内容");
+                    ui.add(egui::Checkbox::new(
+                        &mut self.cli_options.show_time,
+                        "时间信息",
+                    ))
+                    .on_hover_text("显示文件修改时间");
+                    ui.add(egui::Checkbox::new(
+                        &mut self.cli_options.full_path,
+                        "完整路径",
+                    ))
+                    .on_hover_text("显示文件的完整路径而非仅文件名");
+
+                    ui.add_space(16.0);
+                    ui.heading("处理选项");
+                    ui.add(egui::Checkbox::new(
+                        &mut self.cli_options.parallel,
+                        "并行处理",
+                    ))
+                    .on_hover_text("使用多线程加速文件扫描");
+                    ui.add(egui::Checkbox::new(&mut self.cli_options.sort, "大小排序"))
+                        .on_hover_text("按文件大小降序排列");
+                });
+            });
     }
 }
 
@@ -159,6 +223,8 @@ impl eframe::App for FileSizeViewer {
                     self.dark_mode = !self.dark_mode;
                 }
             });
+            ui.separator();
+            self.render_cli_options_panel(ui);
             ui.separator();
 
             // 路径选择和刷新控制
@@ -286,3 +352,5 @@ impl eframe::App for FileSizeViewer {
         });
     }
 }
+
+// 添加cli选项
