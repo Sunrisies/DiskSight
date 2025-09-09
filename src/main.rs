@@ -7,6 +7,21 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 fn main() -> Result<(), eframe::Error> {
+    // 禁用控制台窗口
+    #[cfg(windows)]
+    {
+        use winapi::um::wincon::GetConsoleWindow;
+        use winapi::um::winuser::ShowWindow;
+        use winapi::um::winuser::SW_HIDE;
+
+        unsafe {
+            let window = GetConsoleWindow();
+            if !window.is_null() {
+                ShowWindow(window, SW_HIDE);
+            }
+        }
+    }
+
     let viewport = ViewportBuilder {
         title: Some("DiskSight - 目录文件大小查看器".to_string()),
         app_id: Some("disk-sight".to_string()),
@@ -17,6 +32,7 @@ fn main() -> Result<(), eframe::Error> {
     let options = eframe::NativeOptions {
         viewport,       // 设置窗口
         centered: true, // 居中
+        run_and_return: true,
         ..Default::default()
     };
 
@@ -345,5 +361,3 @@ impl eframe::App for FileSizeViewer {
         });
     }
 }
-
-// 添加cli选项

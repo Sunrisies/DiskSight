@@ -776,6 +776,7 @@ dependencies = [
  "indicatif",
  "rayon",
  "rfd",
+ "winapi",
 ]
 
 [[package]]

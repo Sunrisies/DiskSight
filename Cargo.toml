@@ -14,3 +14,37 @@ fs_extra = "1.3.0"
 indicatif = "0.18.0"
 rayon = "1.11.0"
 rfd = "0.15.4"
+winapi = { version = "0.3.9", features = ["wincon"] }
+[profile.dev]
+opt-level = 0
+debug = true
+[package.metadata.winres]
+windows-subsystem = "windows"
+
+[profile.release]
+opt-level = 3                 # 使用最高优化级别
+lto = true                    # 启用链接时优化
+codegen-units = 1             # 使用单个代码生成单元以获得更好的优化
+panic = "abort"               # 在 panic 时直接中止，减少二进制大小
+strip = true                  # 自动剥离符号信息
+debug = false                 # 不包含调试信息
+windows-subsystem = "windows" # 添加这行
+
+
+[profile.release.package."*"]
+opt-level = 3 # 为所有依赖启用最高优化级别
+
+# 可选：添加基准测试配置
+[profile.bench]
+opt-level = 3
+debug = false
+lto = true
+debug-assertions = false
+codegen-units = 1
+incremental = false
+
+# 可选：添加测试配置
+[profile.test]
+opt-level = 0
+debug = true
+debug-assertions = true
