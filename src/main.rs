@@ -26,7 +26,7 @@ fn main() -> Result<(), eframe::Error> {
         Box::new(|_cc| Ok(Box::new(FileSizeViewer::default()))),
     )
 }
-
+#[derive(Clone, Debug)]
 struct FileSizeViewer {
     current_path: String,
     entries: Arc<Mutex<Vec<FileEntry>>>,
@@ -58,7 +58,7 @@ impl Default for FileSizeViewer {
             is_loading,
             cli_options: Cli {
                 file: None,
-                long_format: false,
+                long_format: true,
                 human_readable: true, // 默认启用人类可读格式
                 all: false,
                 show_time: false,
@@ -80,25 +80,15 @@ impl FileSizeViewer {
     fn refresh_data(&mut self) {
         let path = self.current_path.clone();
         println!("Refreshing data for path: {}", path);
+        println!("Loading data...{:?}", self.cli_options);
         let entries = Arc::clone(&self.entries);
         let is_loading = Arc::clone(&self.is_loading);
-
+        let cli = self.cli_options.clone();
         // 设置加载状态为true
         is_loading.store(true, Ordering::SeqCst);
 
         thread::spawn(move || {
-            let arg = Cli {
-                // path: std::env::current_dir().unwrap(),
-                file: None,
-                long_format: true,
-                human_readable: true,
-                all: true,
-                name: None,
-                show_time: true,
-                parallel: true,
-                sort: true,
-                full_path: true,
-            };
+            let arg = Cli { ..cli };
             match list_directory(Path::new(&path), &arg) {
                 Ok(local_entries) => {
                     let mut entries_lock = entries.lock().unwrap();
@@ -113,7 +103,6 @@ impl FileSizeViewer {
             // 数据加载完成，设置加载状态为false
             is_loading.store(false, Ordering::SeqCst);
         });
-
         self.last_refresh = std::time::Instant::now();
     }
 
@@ -131,11 +120,7 @@ impl FileSizeViewer {
             .show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     ui.heading("显示格式");
-                    ui.add(egui::Checkbox::new(
-                        &mut self.cli_options.long_format,
-                        "长格式",
-                    ))
-                    .on_hover_text("显示详细文件信息");
+
                     ui.add(egui::Checkbox::new(
                         &mut self.cli_options.human_readable,
                         "人性化大小",
@@ -248,13 +233,16 @@ impl eframe::App for FileSizeViewer {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("目录文件大小查看器");
             ui.separator();
-
             // 显示统计信息
             ui.horizontal(|ui| {
                 ui.label(format!(
                     "总数量: {} | 总大小: {}",
                     self.total_count,
                     human_readable_size(self.total_size)
+                ));
+                ui.label(format!(
+                    "刷新时间: {:.2}s",
+                    self.last_refresh.elapsed().as_secs_f32()
                 ));
             });
 
@@ -318,6 +306,7 @@ impl eframe::App for FileSizeViewer {
                     });
                 });
             } else if entries.is_empty() {
+                println!("目录为空或无法访问{:?}", entries);
                 // 显示空目录消息
                 egui::ScrollArea::both().show(ui, |ui| {
                     ui.set_height(300.0);

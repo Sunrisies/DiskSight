@@ -1,3 +1,4 @@
+#[derive(Clone, Debug)]
 pub struct Cli {
     pub file: Option<String>,
     pub long_format: bool,
