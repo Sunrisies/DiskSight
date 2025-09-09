@@ -172,6 +172,55 @@ impl FileSizeViewer {
                 });
             });
     }
+    // 表格
+    fn render_table(&self, ui: &mut egui::Ui, entries: &[FileEntry]) {
+        // 创建表格
+        egui::ScrollArea::both()
+            .on_hover_cursor(CursorIcon::Cell)
+            .show(ui, |ui| {
+                ui.set_height(300.0);
+                TableBuilder::new(ui)
+                    .striped(true)
+                    .resizable(true)
+                    .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                    .column(Column::auto().at_least(40.0)) // 类型列
+                    .column(Column::auto().at_least(40.0)) // 权限列
+                    .column(Column::auto().at_least(80.0)) // 大小列
+                    .column(Column::remainder()) // 路径列
+                    .header(20.0, |mut header| {
+                        header.col(|ui| {
+                            ui.heading("类型");
+                        });
+                        header.col(|ui| {
+                            ui.heading("权限");
+                        });
+                        header.col(|ui| {
+                            ui.heading("大小");
+                        });
+                        header.col(|ui| {
+                            ui.heading("路径");
+                        });
+                    })
+                    .body(|mut body| {
+                        for entry in entries.iter() {
+                            body.row(20.0, |mut row| {
+                                row.col(|ui| {
+                                    ui.label(entry.file_type.to_string());
+                                });
+                                row.col(|ui| {
+                                    ui.label(&entry.permissions);
+                                });
+                                row.col(|ui| {
+                                    ui.label(&entry.size_display);
+                                });
+                                row.col(|ui| {
+                                    ui.label(&entry.name);
+                                });
+                            });
+                        }
+                    });
+            });
+    }
 }
 
 impl eframe::App for FileSizeViewer {
@@ -278,52 +327,7 @@ impl eframe::App for FileSizeViewer {
                     });
                 });
             } else {
-                // 创建表格
-                egui::ScrollArea::both()
-                    .on_hover_cursor(CursorIcon::Cell)
-                    .show(ui, |ui| {
-                        ui.set_height(300.0);
-                        TableBuilder::new(ui)
-                            .striped(true)
-                            .resizable(true)
-                            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                            .column(Column::auto().at_least(40.0)) // 类型列
-                            .column(Column::auto().at_least(40.0)) // 权限列
-                            .column(Column::auto().at_least(80.0)) // 大小列
-                            .column(Column::remainder()) // 路径列
-                            .header(20.0, |mut header| {
-                                header.col(|ui| {
-                                    ui.heading("类型");
-                                });
-                                header.col(|ui| {
-                                    ui.heading("权限");
-                                });
-                                header.col(|ui| {
-                                    ui.heading("大小");
-                                });
-                                header.col(|ui| {
-                                    ui.heading("路径");
-                                });
-                            })
-                            .body(|mut body| {
-                                for entry in entries.iter() {
-                                    body.row(20.0, |mut row| {
-                                        row.col(|ui| {
-                                            ui.label(entry.file_type.to_string());
-                                        });
-                                        row.col(|ui| {
-                                            ui.label(&entry.permissions);
-                                        });
-                                        row.col(|ui| {
-                                            ui.label(&entry.size_display);
-                                        });
-                                        row.col(|ui| {
-                                            ui.label(&entry.name);
-                                        });
-                                    });
-                                }
-                            });
-                    });
+                self.render_table(ui, &entries);
             }
             // 定义边框颜色和宽度
             // style::
