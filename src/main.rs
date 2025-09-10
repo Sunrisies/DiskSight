@@ -3,6 +3,7 @@ use eframe::egui;
 use egui::{CursorIcon, ViewportBuilder};
 use egui_extras::{Column, TableBuilder};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -26,7 +27,7 @@ fn main() -> Result<(), eframe::Error> {
         title: Some("DiskSight - 目录文件大小查看器".to_string()),
         app_id: Some("disk-sight".to_string()),
         position: None,
-        inner_size: Some(egui::Vec2::new(1000.0, 600.0)),
+        inner_size: Some(egui::Vec2::new(860.0, 520.0)),
         ..Default::default()
     };
     let options = eframe::NativeOptions {
@@ -52,6 +53,8 @@ struct FileSizeViewer {
     last_refresh: std::time::Instant,
     is_loading: Arc<AtomicBool>, // 添加加载状态
     cli_options: Cli,            // 添加 CLI 选项
+    last_refresh_duration: f64,  // 存储最后一次刷新的耗时（单位：秒，使用更高精度的f64）
+    refresh_duration_receiver: Option<Rc<std::sync::mpsc::Receiver<f64>>>, // 通道接收端，用于接收刷新耗时数据
 }
 
 impl Default for FileSizeViewer {
@@ -72,6 +75,8 @@ impl Default for FileSizeViewer {
             dark_mode: false,
             last_refresh: std::time::Instant::now(),
             is_loading,
+            last_refresh_duration: 0.0,      // 初始化刷新时间为0
+            refresh_duration_receiver: None, // 初始化接收端为None
             cli_options: Cli {
                 file: None,
                 long_format: true,
@@ -102,8 +107,11 @@ impl FileSizeViewer {
         let cli = self.cli_options.clone();
         // 设置加载状态为true
         is_loading.store(true, Ordering::SeqCst);
-
+        // 创建通道
+        let (sender, receiver) = std::sync::mpsc::channel();
+        self.refresh_duration_receiver = Some(Rc::new(receiver));
         thread::spawn(move || {
+            let start_time = std::time::Instant::now();
             let arg = Cli { ..cli };
             match list_directory(Path::new(&path), &arg) {
                 Ok(local_entries) => {
@@ -116,6 +124,9 @@ impl FileSizeViewer {
                     *entries_lock = Vec::new(); // 出错时设置为空向量
                 }
             }
+            // 计算运行时间并通过通道发送
+            let elapsed = start_time.elapsed().as_secs_f64();
+            let _ = sender.send(elapsed);
             // 数据加载完成，设置加载状态为false
             is_loading.store(false, Ordering::SeqCst);
         });
@@ -245,6 +256,21 @@ impl eframe::App for FileSizeViewer {
         } else {
             ctx.set_visuals(egui::Visuals::light());
         }
+        if let Some(ref receiver) = self.refresh_duration_receiver {
+            match receiver.try_recv() {
+                Ok(time) => {
+                    self.last_refresh_duration = time;
+                    // 可以在这里清除接收器，或者保留以备后续使用
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    // 没有新消息，继续等待
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    // 发送端已断开，清除接收器
+                    self.refresh_duration_receiver = None;
+                }
+            }
+        }
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("目录文件大小查看器");
@@ -256,10 +282,7 @@ impl eframe::App for FileSizeViewer {
                     self.total_count,
                     human_readable_size(self.total_size)
                 ));
-                ui.label(format!(
-                    "刷新时间: {:.2}s",
-                    self.last_refresh.elapsed().as_secs_f32()
-                ));
+                ui.label(format!("刷新耗时: {:.2}s", self.last_refresh_duration));
             });
 
             // 主题切换
