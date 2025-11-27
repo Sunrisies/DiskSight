@@ -199,6 +199,7 @@ impl FileSizeViewer {
                     .column(Column::auto().at_least(40.0)) // 权限列
                     .column(Column::auto().at_least(80.0)) // 大小列
                     .column(Column::remainder()) // 路径列
+                    .column(Column::auto().at_least(60.0)) // 操作列
                     .header(20.0, |mut header| {
                         header.col(|ui| {
                             ui.heading("类型");
@@ -211,6 +212,9 @@ impl FileSizeViewer {
                         });
                         header.col(|ui| {
                             ui.heading("路径");
+                        });
+                        header.col(|ui| {
+                            ui.heading("操作");
                         });
                     })
                     .body(|mut body| {
@@ -228,6 +232,11 @@ impl FileSizeViewer {
                                 row.col(|ui| {
                                     ui.label(&entry.name);
                                 });
+                                row.col(|ui| {
+                                    if ui.button("删除").clicked() {
+                                        println!("删除文件: {}", entry.name);
+                                    }
+                                });
                             });
                         }
                     });
@@ -241,7 +250,8 @@ impl eframe::App for FileSizeViewer {
         let mut fonts = egui::FontDefinitions::default();
         fonts.font_data.insert(
             "SimHei".to_owned(),
-            egui::FontData::from_static(include_bytes!("../fonts/SimHei.ttf")).into(),
+            // egui::FontData::from_static(include_bytes!("../fonts/SimHei.ttf")).into(),
+            egui::FontData::from_static(include_bytes!("../fonts/NotoSansSC-Bold.ttf")).into(),
         );
         fonts
             .families
@@ -312,7 +322,12 @@ impl eframe::App for FileSizeViewer {
                 let is_loading = self.is_loading.load(std::sync::atomic::Ordering::SeqCst);
 
                 // 使用 egui 推荐的方式设置控件启用状态
-                let response = ui.add_enabled(!is_loading, egui::Button::new("浏览..."));
+                let response = ui.add_enabled(
+                    !is_loading,
+                    egui::Button::new("浏览")
+                        .stroke(egui::Stroke::new(1.0, egui::Color32::DARK_GRAY)) // 设置边框
+                        .min_size(egui::Vec2::new(60.0, 24.0)), // 设置最小尺寸
+                );
                 if response.clicked() {
                     self.select_directory();
                 }
