@@ -55,6 +55,8 @@ struct FileSizeViewer {
     cli_options: Cli,            // 添加 CLI 选项
     last_refresh_duration: f64,  // 存储最后一次刷新的耗时（单位：秒，使用更高精度的f64）
     refresh_duration_receiver: Option<Rc<std::sync::mpsc::Receiver<f64>>>, // 通道接收端，用于接收刷新耗时数据
+    show_delete_confirm: bool,
+    pending_delete_entry: Option<FileEntry>,
 }
 
 impl Default for FileSizeViewer {
@@ -88,6 +90,8 @@ impl Default for FileSizeViewer {
                 name: None,
                 full_path: false,
             },
+            show_delete_confirm: false,
+            pending_delete_entry: None,
         };
 
         viewer.refresh_data();
@@ -185,7 +189,7 @@ impl FileSizeViewer {
             });
     }
     // 表格
-    fn render_table(&self, ui: &mut egui::Ui, entries: &[FileEntry]) {
+    fn render_table(&mut self, ui: &mut egui::Ui, entries: &[FileEntry]) {
         // 创建表格
         egui::ScrollArea::both()
             .on_hover_cursor(CursorIcon::Cell)
@@ -234,7 +238,8 @@ impl FileSizeViewer {
                                 });
                                 row.col(|ui| {
                                     if ui.button("删除").clicked() {
-                                        println!("删除文件: {}", entry.name);
+                                        self.show_delete_confirm = true;
+                                        self.pending_delete_entry = Some(entry.clone());
                                     }
                                 });
                             });
@@ -266,6 +271,32 @@ impl eframe::App for FileSizeViewer {
         } else {
             ctx.set_visuals(egui::Visuals::light());
         }
+        // 在 update 方法中添加
+        // if self.show_delete_confirm {
+        //     if let Some(ref entry) = self.pending_delete_entry {
+        //         egui::Window::new("确认删除")
+        //             .collapsible(false)
+        //             .resizable(false)
+        //             .show(ctx, |ui| {
+        //                 ui.vertical_centered(|ui| {
+        //                     ui.label(format!("确定要删除 {} 吗？", entry.name));
+        //                     ui.label("警告：此操作不可恢复！");
+        //                     ui.horizontal(|ui| {
+        //                         if ui.button("确定").clicked() {
+        //                             self.delete_entry(entry);
+        //                             self.show_delete_confirm = false;
+        //                             self.pending_delete_entry = None;
+        //                         }
+        //                         if ui.button("取消").clicked() {
+        //                             self.show_delete_confirm = false;
+        //                             self.pending_delete_entry = None;
+        //                         }
+        //                     });
+        //                 });
+        //             });
+        //     }
+        // }
+
         if let Some(ref receiver) = self.refresh_duration_receiver {
             match receiver.try_recv() {
                 Ok(time) => {
@@ -370,7 +401,10 @@ impl eframe::App for FileSizeViewer {
                     });
                 });
             } else {
-                self.render_table(ui, &entries);
+                // 克隆 entries 以避免借用检查问题
+                let entries_clone = entries.clone();
+                drop(entries); // 显式释放锁
+                self.render_table(ui, &entries_clone);
             }
             // 定义边框颜色和宽度
             // style::
