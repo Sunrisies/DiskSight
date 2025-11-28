@@ -1,36 +1,23 @@
 "use client"
 
-import { useState, useMemo } from "react"
+import { useState, useMemo, useCallback } from "react"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Separator } from "@/components/ui/separator"
-import { FolderOpen, File, RefreshCw, FolderSearch, Moon, Sun, HardDrive, Clock, Files } from "lucide-react"
-
+import { FolderOpen, File, RefreshCw, FolderSearch, Moon, Sun, HardDrive, Clock, Files, Loader2 } from "lucide-react"
+import { open } from '@tauri-apps/plugin-dialog';
+import { invoke } from '@tauri-apps/api/core';
 interface FileItem {
-  type: string
+  file_type: string
   permissions: string
-  size: number
-  sizeDisplay: string
+  size_raw: number
+  size_display: string
   path: string
+  name: string
 }
-
-const mockFiles: FileItem[] = [
-  { type: "-", permissions: "-w-x", size: 0, sizeDisplay: "0B", path: ".cargo-lock" },
-  { type: "d", permissions: "-w-x", size: 0, sizeDisplay: "0B", path: "examples" },
-  { type: "d", permissions: "-w-x", size: 0, sizeDisplay: "0B", path: "incremental" },
-  { type: "-", permissions: "-w-x", size: 267, sizeDisplay: "267.0B", path: "libdisk_sight.d" },
-  { type: "-", permissions: "-w-x", size: 371, sizeDisplay: "371.0B", path: "disk-sight.d" },
-  { type: "-", permissions: "-w-x", size: 185800, sizeDisplay: "185.8KB", path: "libdisk_sight.rlib" },
-  { type: "-", permissions: "-w-x", size: 301400, sizeDisplay: "301.4KB", path: "libDiskSight.rlib" },
-  { type: "d", permissions: "-w-x", size: 399700, sizeDisplay: "399.7KB", path: ".fingerprint" },
-  { type: "-", permissions: "-w-x", size: 1800000, sizeDisplay: "1.8MB", path: "disk_sight.pdb" },
-  { type: "-", permissions: "-w-x", size: 14000000, sizeDisplay: "14.0MB", path: "disk-sight.exe" },
-  { type: "d", permissions: "-w-x", size: 198800000, sizeDisplay: "198.8MB", path: "build" },
-  { type: "d", permissions: "-w-x", size: 861700000, sizeDisplay: "861.7MB", path: "deps" },
-]
 
 function formatBytes(bytes: number, humanReadable: boolean): string {
   if (!humanReadable) return `${bytes}B`
@@ -49,33 +36,78 @@ export default function DiskSight() {
   const [showFullPath, setShowFullPath] = useState(false)
   const [parallelProcessing, setParallelProcessing] = useState(true)
   const [sortBySize, setSortBySize] = useState(true)
+  const [files, setFiles] = useState<FileItem[]>([])
   const [currentPath, setCurrentPath] = useState("D:\\project\\rust\\disk-sight\\src-tauri\\target\\debug")
   const [refreshTime] = useState(0.24)
   const [isRefreshing, setIsRefreshing] = useState(false)
+  const [isLoading, setIsLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
   const filteredFiles = useMemo(() => {
-    let files = [...mockFiles]
+    console.log(files, 'files')
+    let result: FileItem[] = [...files!]
     if (!showHiddenFiles) {
-      files = files.filter((f) => !f.path.startsWith("."))
+      result = result.filter((f) => !f.name.startsWith("."))
     }
     if (sortBySize) {
-      files.sort((a, b) => b.size - a.size)
+      result.sort((a, b) => b.size_raw - a.size_raw)
     }
-    return files
-  }, [showHiddenFiles, sortBySize])
+    return result.length > 0 ? result : []
+  }, [files, showHiddenFiles, sortBySize])
 
   const totalSize = useMemo(() => {
-    return filteredFiles.reduce((acc, f) => acc + f.size, 0)
+    return filteredFiles.reduce((acc, f) => acc + f.size_raw, 0)
   }, [filteredFiles])
 
   const handleRefresh = () => {
     setIsRefreshing(true)
     setTimeout(() => setIsRefreshing(false), 500)
   }
+  const fetchDirectory = useCallback(
+    async (path: string) => {
+      if (!path) return
 
+      setIsLoading(true)
+      setError(null)
+      const startTime = performance.now()
+
+      try {
+        // Tauri environment - use actual invoke
+        const result = await invoke<FileItem[]>("get_list_directory", {
+          path,
+          parallel: parallelProcessing,
+        })
+        console.log(result, 'result')
+        setFiles(() => result)
+        setCurrentPath(path)
+
+
+        const endTime = performance.now()
+        // setRefreshTime(Number(((endTime - startTime) / 1000).toFixed(2)))
+      } catch (err) {
+        console.error("Failed to fetch directory:", err)
+        setError(err instanceof Error ? err.message : "获取目录失败")
+      } finally {
+        setIsLoading(false)
+      }
+    },
+    [parallelProcessing],
+  )
+
+  // 选择文件
+  const handleSelectFile = async () => {
+    console.log('打开文件')
+    const selected = await open({
+      directory: true,
+      // multiple: true,
+    });
+    console.log(selected, 'selected')
+    await fetchDirectory(selected!)
+
+  }
   return (
     <div className={darkMode ? "dark" : ""}>
-      <div className="h-[860px] w-[520px] overflow-hidden bg-background text-foreground flex flex-col">
+      <div className="h-full w-full  overflow-hidden bg-background text-foreground flex flex-col">
         {/* Header Bar */}
         <div className="flex items-center justify-between px-4 py-2.5 border-b border-border bg-card">
           <div className="flex items-center gap-2.5">
@@ -189,7 +221,7 @@ export default function DiskSight() {
             onChange={(e) => setCurrentPath(e.target.value)}
             className="h-7 flex-1 font-mono text-xs px-2"
           />
-          <Button variant="outline" size="sm" className="h-7 px-2 text-xs gap-1.5 bg-transparent">
+          <Button variant="outline" size="sm" className="h-7 px-2 text-xs gap-1.5 bg-transparent" onClick={handleSelectFile}>
             <FolderSearch className="h-3.5 w-3.5" />
             浏览
           </Button>
@@ -206,7 +238,15 @@ export default function DiskSight() {
         </div>
 
         {/* File Table - Scrollable */}
-        <div className="flex-1 overflow-auto">
+        <div className="h-[400px] overflow-auto">
+          {isLoading && (
+            <div className="absolute inset-0 bg-background/80 backdrop-blur-sm flex items-center justify-center z-10">
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                <span>正在加载...</span>
+              </div>
+            </div>
+          )}
           <Table>
             <TableHeader className="sticky top-0 bg-muted/80 backdrop-blur-sm">
               <TableRow className="hover:bg-transparent border-border">
@@ -218,13 +258,14 @@ export default function DiskSight() {
               </TableRow>
             </TableHeader>
             <TableBody>
+              {JSON.stringify(filteredFiles.length)}
               {filteredFiles.map((file, index) => (
                 <TableRow
                   key={index}
                   className="group cursor-pointer border-border/50 hover:bg-accent/50 transition-colors"
                 >
                   <TableCell className="py-1.5 px-3">
-                    {file.type === "d" ? (
+                    {file.file_type === "d" ? (
                       <Badge
                         variant="outline"
                         className="h-5 gap-1 px-1.5 text-[10px] border-chart-3/50 bg-chart-3/10 text-chart-3 font-medium"
@@ -244,7 +285,7 @@ export default function DiskSight() {
                     <code className="text-[10px] font-mono text-muted-foreground">{file.permissions}</code>
                   </TableCell>
                   <TableCell className="py-1.5 px-3 text-right font-mono text-xs tabular-nums">
-                    {humanReadableSize ? file.sizeDisplay : formatBytes(file.size, false)}
+                    {humanReadableSize ? file.size_display : file.size_raw}
                   </TableCell>
                   {showTimeInfo && (
                     <TableCell className="py-1.5 px-3 text-xs text-muted-foreground">2024-01-15 14:32</TableCell>

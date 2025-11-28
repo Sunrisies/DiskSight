@@ -1,3 +1,5 @@
+use serde::{Deserialize, Serialize};
+
 #[derive(Clone, Debug)]
 pub struct Cli {
     pub file: Option<String>,
@@ -11,7 +13,7 @@ pub struct Cli {
     pub full_path: bool,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FileEntry {
     pub file_type: char,
     pub permissions: String,
