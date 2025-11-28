@@ -176,7 +176,8 @@ pub fn list_directory(path: &Path, args: &Cli) -> Result<Vec<FileEntry>, Error> 
                         file_path.to_string_lossy().into_owned()
                     }
                 },
-                name: file.to_string(), // 新增字段
+                name: file.to_string(),            // 新增字段
+                created_time: metadata.created()?, // 创建时间
             });
         }
 
@@ -261,6 +262,7 @@ fn calculate_dir_size1(
                         }
                     },
                     name: file_name, // 新增字段
+                    created_time: metadata.created().ok().expect("REASON"), // 创建时间
                 });
             }
         } else {

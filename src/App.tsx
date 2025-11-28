@@ -10,6 +10,11 @@ import { Separator } from "@/components/ui/separator"
 import { FolderOpen, File, RefreshCw, FolderSearch, Moon, Sun, HardDrive, Clock, Files, Loader2 } from "lucide-react"
 import { open } from '@tauri-apps/plugin-dialog';
 import { invoke } from '@tauri-apps/api/core';
+import { conversionTime } from 'sunrise-utils'
+interface ICreatedTime {
+  nanos_since_epoch: number
+  secs_since_epoch: number
+}
 interface FileItem {
   file_type: string
   permissions: string
@@ -17,8 +22,12 @@ interface FileItem {
   size_display: string
   path: string
   name: string
+  created_time: ICreatedTime
 }
-
+interface DirectoryResult {
+  entries: FileItem[],
+  query_time: number
+}
 function formatBytes(bytes: number, humanReadable: boolean): string {
   if (!humanReadable) return `${bytes}B`
   if (bytes === 0) return "0B"
@@ -29,7 +38,7 @@ function formatBytes(bytes: number, humanReadable: boolean): string {
 }
 
 export default function DiskSight() {
-  const [darkMode, setDarkMode] = useState(true)
+  const [darkMode, setDarkMode] = useState(false)
   const [humanReadableSize, setHumanReadableSize] = useState(true)
   const [showHiddenFiles, setShowHiddenFiles] = useState(false)
   const [showTimeInfo, setShowTimeInfo] = useState(false)
@@ -37,12 +46,11 @@ export default function DiskSight() {
   const [parallelProcessing, setParallelProcessing] = useState(true)
   const [sortBySize, setSortBySize] = useState(true)
   const [files, setFiles] = useState<FileItem[]>([])
-  const [currentPath, setCurrentPath] = useState("D:\\project\\rust\\disk-sight\\src-tauri\\target\\debug")
-  const [refreshTime] = useState(0.24)
+  const [currentPath, setCurrentPath] = useState("")
+  const [refreshTime, setRefreshTime] = useState(0)
   const [isRefreshing, setIsRefreshing] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-
+  const [loadingProgress, setLoadingProgress] = useState<string>("")
   const filteredFiles = useMemo(() => {
     console.log(files, 'files')
     let result: FileItem[] = [...files!]
@@ -68,25 +76,20 @@ export default function DiskSight() {
       if (!path) return
 
       setIsLoading(true)
-      setError(null)
-      const startTime = performance.now()
+      setLoadingProgress("正在扫描目录...")
 
       try {
         // Tauri environment - use actual invoke
-        const result = await invoke<FileItem[]>("get_list_directory", {
+        const result = await invoke<DirectoryResult>("get_list_directory", {
           path,
           parallel: parallelProcessing,
         })
         console.log(result, 'result')
-        setFiles(() => result)
+        setFiles(() => result.entries)
         setCurrentPath(path)
-
-
-        const endTime = performance.now()
-        // setRefreshTime(Number(((endTime - startTime) / 1000).toFixed(2)))
+        setRefreshTime(Number(result.query_time.toFixed(2)))
       } catch (err) {
         console.error("Failed to fetch directory:", err)
-        setError(err instanceof Error ? err.message : "获取目录失败")
       } finally {
         setIsLoading(false)
       }
@@ -241,9 +244,9 @@ export default function DiskSight() {
         <div className="h-[400px] overflow-auto">
           {isLoading && (
             <div className="absolute inset-0 bg-background/80 backdrop-blur-sm flex items-center justify-center z-10">
-              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <div className="flex flex-col items-center gap-2 text-sm text-muted-foreground">
                 <Loader2 className="h-4 w-4 animate-spin" />
-                <span>正在加载...</span>
+                <span>{loadingProgress || "正在加载..."}</span>
               </div>
             </div>
           )}
@@ -258,7 +261,6 @@ export default function DiskSight() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {JSON.stringify(filteredFiles.length)}
               {filteredFiles.map((file, index) => (
                 <TableRow
                   key={index}
@@ -288,11 +290,11 @@ export default function DiskSight() {
                     {humanReadableSize ? file.size_display : file.size_raw}
                   </TableCell>
                   {showTimeInfo && (
-                    <TableCell className="py-1.5 px-3 text-xs text-muted-foreground">2024-01-15 14:32</TableCell>
+                    <TableCell className="py-1.5 px-3 text-xs text-muted-foreground">{conversionTime(file.created_time.secs_since_epoch)}</TableCell>
                   )}
                   <TableCell className="py-1.5 px-3">
-                    <span className="font-mono text-xs group-hover:text-primary transition-colors truncate block max-w-[200px]">
-                      {showFullPath ? `${currentPath}\\${file.path}` : file.path}
+                    <span className="font-mono text-xs group-hover:text-primary transition-colors truncate block max-w-[300px]">
+                      {showFullPath ? file.path : file.name}
                     </span>
                   </TableCell>
                 </TableRow>
@@ -303,7 +305,7 @@ export default function DiskSight() {
 
         {/* Footer */}
         <div className="flex items-center justify-between px-4 py-1.5 border-t border-border bg-muted/30 text-[10px] text-muted-foreground">
-          <span>DiskSight v1.0 | 开发: Sunrise</span>
+          <span>DiskSight v1.0.1 | 开发: Sunrise</span>
           <span>© 2025 All rights reserved</span>
         </div>
       </div>
