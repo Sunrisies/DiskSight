@@ -37,3 +37,10 @@ pub struct DirectoryResult {
     pub entries: Vec<FileEntry>,
     pub query_time: f64,
 }
+
+#[derive(Clone, Serialize)]
+pub struct ProgressEvent {
+    pub current_path: String,
+    pub current_file: String,
+    pub status: String,
+}

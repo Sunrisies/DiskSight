@@ -1,20 +1,24 @@
 "use client"
 
-import { useState, useMemo, useCallback } from "react"
+import { useState, useMemo, useCallback, useEffect } from "react"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Separator } from "@/components/ui/separator"
-import { FolderOpen, File, RefreshCw, FolderSearch, Moon, Sun, HardDrive, Clock, Files, Loader2 } from "lucide-react"
+import { FolderOpen, File, RefreshCw, FolderSearch, Moon, Sun, HardDrive, Clock, Files, Loader2, X } from "lucide-react"
 import { open } from '@tauri-apps/plugin-dialog';
 import { invoke } from '@tauri-apps/api/core';
+import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { conversionTime } from 'sunrise-utils'
+import { cn } from "./lib/utils"
+
 interface ICreatedTime {
   nanos_since_epoch: number
   secs_since_epoch: number
 }
+
 interface FileItem {
   file_type: string
   permissions: string
@@ -24,10 +28,19 @@ interface FileItem {
   name: string
   created_time: ICreatedTime
 }
+
 interface DirectoryResult {
   entries: FileItem[],
   query_time: number
 }
+
+// 进度事件接口
+interface ProgressEvent {
+  current_path: string
+  current_file: string
+  status: string
+}
+
 function formatBytes(bytes: number, humanReadable: boolean): string {
   if (!humanReadable) return `${bytes}B`
   if (bytes === 0) return "0B"
@@ -50,10 +63,57 @@ export default function DiskSight() {
   const [refreshTime, setRefreshTime] = useState(0)
   const [isRefreshing, setIsRefreshing] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
-  const [loadingProgress, setLoadingProgress] = useState<string>("")
+  const [scanProgress, setScanProgress] = useState<ProgressEvent | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  // 是否开启文件扫描详情
+  const [showScanDetails, setShowScanDetails] = useState(false)
+
+  // 事件监听
+  useEffect(() => {
+    let unlistenStarted: UnlistenFn | undefined;
+    let unlistenProgress: UnlistenFn | undefined;
+    let unlistenCompleted: UnlistenFn | undefined;
+    let unlistenError: UnlistenFn | undefined;
+
+    const setupListeners = async () => {
+      try {
+        unlistenStarted = await listen('scan-started', () => {
+          setIsLoading(true);
+          setError(null);
+          setScanProgress(null);
+        });
+
+        unlistenProgress = await listen('scan-progress', (event: { payload: ProgressEvent }) => {
+          setScanProgress(event.payload);
+        });
+
+        unlistenCompleted = await listen('scan-completed', () => {
+          setIsLoading(false);
+          setScanProgress(null);
+        });
+
+        unlistenError = await listen('scan-error', (event) => {
+          setIsLoading(false);
+          setScanProgress(null);
+          setError(event.payload as string);
+        });
+      } catch (error) {
+        console.error('Failed to setup event listeners:', error);
+      }
+    };
+
+    setupListeners();
+
+    return () => {
+      unlistenStarted?.();
+      unlistenProgress?.();
+      unlistenCompleted?.();
+      unlistenError?.();
+    };
+  }, []);
+
   const filteredFiles = useMemo(() => {
-    console.log(files, 'files')
-    let result: FileItem[] = [...files!]
+    let result: FileItem[] = [...files]
     if (!showHiddenFiles) {
       result = result.filter((f) => !f.name.startsWith("."))
     }
@@ -67,50 +127,83 @@ export default function DiskSight() {
     return filteredFiles.reduce((acc, f) => acc + f.size_raw, 0)
   }, [filteredFiles])
 
-  const handleRefresh = () => {
-    setIsRefreshing(true)
-    setTimeout(() => setIsRefreshing(false), 500)
-  }
-  const fetchDirectory = useCallback(
-    async (path: string) => {
-      if (!path) return
+  const handleRefresh = useCallback(() => {
+    console.log("Refreshing...", showScanDetails)
+    if (currentPath) {
+      setIsRefreshing(true)
+      fetchDirectory(currentPath, showScanDetails)
+      setTimeout(() => setIsRefreshing(false), 500)
+    }
+  }, [currentPath, showScanDetails])
 
-      setIsLoading(true)
-      setLoadingProgress("正在扫描目录...")
+  const fetchDirectory = useCallback(async (path: string, showDetails: boolean = false) => {
+    if (!path) return
 
-      try {
-        // Tauri environment - use actual invoke
-        const result = await invoke<DirectoryResult>("get_list_directory", {
+    setIsLoading(true)
+    setError(null)
+    let result: DirectoryResult
+    console.log("Fetching directory:", path, showScanDetails)
+    try {
+      if (showDetails) {
+        result = await invoke<DirectoryResult>("get_list_directory", {
           path,
-          parallel: parallelProcessing,
         })
-        console.log(result, 'result')
-        setFiles(() => result.entries)
-        setCurrentPath(path)
-        setRefreshTime(Number(result.query_time.toFixed(2)))
-      } catch (err) {
-        console.error("Failed to fetch directory:", err)
-      } finally {
-        setIsLoading(false)
+      } else {
+        result = await invoke<DirectoryResult>("calculate_dir_size_simple_fast", {
+          path,
+        })
+        setIsLoading(false);
+        setScanProgress(null);
       }
-    },
-    [parallelProcessing],
-  )
 
-  // 选择文件
+      setFiles(result.entries)
+      setCurrentPath(path)
+      console.log("Directory fetched:", result)
+      setRefreshTime(Number(result.query_time.toFixed(2)))
+    } catch (err) {
+      console.error("Failed to fetch directory:", err)
+      setError(err instanceof Error ? err.message : "获取目录失败")
+    }
+  }, [parallelProcessing, humanReadableSize, showHiddenFiles, sortBySize, showTimeInfo, showFullPath])
+
+  // 选择目录
   const handleSelectFile = async () => {
-    console.log('打开文件')
     const selected = await open({
       directory: true,
-      // multiple: true,
-    });
-    console.log(selected, 'selected')
-    await fetchDirectory(selected!)
+    })
 
+    if (selected) {
+      await fetchDirectory(selected)
+    }
   }
+
+  // 取消扫描
+  const handleCancelScan = () => {
+    setIsLoading(false)
+    setScanProgress(null)
+    // 注意：这里需要后端支持取消操作，目前只是前端状态重置
+  }
+
+  // 获取状态显示文本
+  const getStatusText = (status: string) => {
+    const statusMap: Record<string, string> = {
+      'processing': '处理中',
+      'processing_batch': '批量处理中',
+      'calculating_directory_size': '计算目录大小',
+      'directory_calculation_completed': '目录计算完成',
+      'completed': '完成',
+      'searching_in_directory': '在目录中搜索',
+      'checking_file': '检查文件',
+      'calculating_matching_directory': '计算匹配目录',
+      'matching_directory_completed': '匹配目录完成',
+      'processing_file': '处理文件'
+    }
+    return statusMap[status] || status
+  }
+
   return (
-    <div className={darkMode ? "dark" : ""}>
-      <div className="h-full w-full  overflow-hidden bg-background text-foreground flex flex-col">
+    <div className={cn("h-full", darkMode ? "dark" : "")}>
+      <div className="h-full w-full overflow-hidden bg-background text-foreground flex flex-col">
         {/* Header Bar */}
         <div className="flex items-center justify-between px-4 py-2.5 border-b border-border bg-card">
           <div className="flex items-center gap-2.5">
@@ -212,6 +305,19 @@ export default function DiskSight() {
                 />
                 <span>大小排序</span>
               </label>
+              {showScanDetails} -
+              <label className="flex items-center gap-1.5 cursor-pointer">
+                <Checkbox
+                  checked={showScanDetails}
+                  onCheckedChange={async (checked) => {
+                    setShowScanDetails(checked as boolean)
+
+                  }}
+                  className="h-3.5 w-3.5"
+                />
+                <span>显示扫描详情</span>
+              </label>
+
             </div>
           </div>
         </div>
@@ -222,9 +328,21 @@ export default function DiskSight() {
           <Input
             value={currentPath}
             onChange={(e) => setCurrentPath(e.target.value)}
+            onKeyPress={(e) => {
+              if (e.key === 'Enter') {
+                fetchDirectory(currentPath)
+              }
+            }}
             className="h-7 flex-1 font-mono text-xs px-2"
+            placeholder="输入目录路径或点击浏览选择"
           />
-          <Button variant="outline" size="sm" className="h-7 px-2 text-xs gap-1.5 bg-transparent" onClick={handleSelectFile}>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-7 px-2 text-xs gap-1.5 bg-transparent"
+            onClick={handleSelectFile}
+            disabled={isLoading}
+          >
             <FolderSearch className="h-3.5 w-3.5" />
             浏览
           </Button>
@@ -233,74 +351,158 @@ export default function DiskSight() {
             size="sm"
             onClick={handleRefresh}
             className="h-7 px-2 text-xs gap-1.5"
-            disabled={isRefreshing}
+            disabled={isRefreshing || isLoading || !currentPath}
           >
             <RefreshCw className={`h-3.5 w-3.5 ${isRefreshing ? "animate-spin" : ""}`} />
             刷新
           </Button>
         </div>
 
+        {/* 错误提示 */}
+        {error && (
+          <div className="mx-4 mt-2 p-3 bg-destructive/10 border border-destructive/20 rounded-lg">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2 text-destructive text-sm">
+                <span>错误:</span>
+                <span>{error}</span>
+              </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setError(null)}
+                className="h-6 w-6 p-0"
+              >
+                <X className="h-3 w-3" />
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {/* 加载遮罩和进度显示 */}
+        {isLoading && (
+          <div className="absolute inset-0 bg-background/80 backdrop-blur-sm flex items-center justify-center z-10">
+            <div className="bg-card p-6 rounded-lg border shadow-lg max-w-md w-full mx-4">
+              <div className="flex items-center gap-3 mb-4">
+                <Loader2 className="h-6 w-6 animate-spin text-primary" />
+                <div className="flex-1">
+                  <h3 className="font-semibold text-sm mb-2">扫描目录中...</h3>
+
+                  {scanProgress && (
+                    <div className="space-y-2 text-xs">
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">状态:</span>
+                        <span className="font-medium capitalize">{getStatusText(scanProgress.status)}</span>
+                      </div>
+
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">当前目录:</span>
+                        <span
+                          className="font-medium truncate ml-2 max-w-[200px]"
+                          title={scanProgress.current_path}
+                        >
+                          {scanProgress.current_path.split(/[\\/]/).pop() || scanProgress.current_path}
+                        </span>
+                      </div>
+
+                      {scanProgress.current_file && (
+                        <div className="flex justify-between">
+                          <span className="text-muted-foreground">当前文件:</span>
+                          <span
+                            className="font-medium truncate ml-2 max-w-[200px]"
+                            title={scanProgress.current_file}
+                          >
+                            {scanProgress.current_file.split(/[\\/]/).pop() || scanProgress.current_file}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex justify-end">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleCancelScan}
+                >
+                  取消
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* File Table - Scrollable */}
-        <div className="h-[400px] overflow-auto">
-          {isLoading && (
-            <div className="absolute inset-0 bg-background/80 backdrop-blur-sm flex items-center justify-center z-10">
-              <div className="flex flex-col items-center gap-2 text-sm text-muted-foreground">
-                <Loader2 className="h-4 w-4 animate-spin" />
-                <span>{loadingProgress || "正在加载..."}</span>
+        <div className="flex-1 overflow-auto relative">
+          {!isLoading && filteredFiles.length === 0 && (
+            <div className="absolute inset-0 flex items-center justify-center">
+              <div className="text-center text-muted-foreground">
+                <FolderSearch className="h-12 w-12 mx-auto mb-2 opacity-50" />
+                <p>请选择目录开始浏览</p>
               </div>
             </div>
           )}
-          <Table>
-            <TableHeader className="sticky top-0 bg-muted/80 backdrop-blur-sm">
-              <TableRow className="hover:bg-transparent border-border">
-                <TableHead className="h-8 text-xs font-semibold w-16">类型</TableHead>
-                <TableHead className="h-8 text-xs font-semibold w-16">权限</TableHead>
-                <TableHead className="h-8 text-xs font-semibold w-20 text-right">大小</TableHead>
-                {showTimeInfo && <TableHead className="h-8 text-xs font-semibold w-32">修改时间</TableHead>}
-                <TableHead className="h-8 text-xs font-semibold">路径</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {filteredFiles.map((file, index) => (
-                <TableRow
-                  key={index}
-                  className="group cursor-pointer border-border/50 hover:bg-accent/50 transition-colors"
-                >
-                  <TableCell className="py-1.5 px-3">
-                    {file.file_type === "d" ? (
-                      <Badge
-                        variant="outline"
-                        className="h-5 gap-1 px-1.5 text-[10px] border-chart-3/50 bg-chart-3/10 text-chart-3 font-medium"
-                      >
-                        <FolderOpen className="h-2.5 w-2.5" />d
-                      </Badge>
-                    ) : (
-                      <Badge
-                        variant="outline"
-                        className="h-5 gap-1 px-1.5 text-[10px] border-primary/50 bg-primary/10 text-primary font-medium"
-                      >
-                        <File className="h-2.5 w-2.5" />-
-                      </Badge>
-                    )}
-                  </TableCell>
-                  <TableCell className="py-1.5 px-3">
-                    <code className="text-[10px] font-mono text-muted-foreground">{file.permissions}</code>
-                  </TableCell>
-                  <TableCell className="py-1.5 px-3 text-right font-mono text-xs tabular-nums">
-                    {humanReadableSize ? file.size_display : file.size_raw}
-                  </TableCell>
-                  {showTimeInfo && (
-                    <TableCell className="py-1.5 px-3 text-xs text-muted-foreground">{conversionTime(file.created_time.secs_since_epoch)}</TableCell>
-                  )}
-                  <TableCell className="py-1.5 px-3">
-                    <span className="font-mono text-xs group-hover:text-primary transition-colors truncate block max-w-[300px]">
-                      {showFullPath ? file.path : file.name}
-                    </span>
-                  </TableCell>
+
+          {filteredFiles.length > 0 && (
+            <Table >
+              <TableHeader className="sticky top-0 bg-muted/80 backdrop-blur-sm">
+                <TableRow className="hover:bg-transparent border-border">
+                  <TableHead className="h-8 text-xs font-semibold w-16">类型</TableHead>
+                  <TableHead className="h-8 text-xs font-semibold w-16">权限</TableHead>
+                  <TableHead className="h-8 text-xs font-semibold w-20 text-right">大小</TableHead>
+                  {showTimeInfo && <TableHead className="h-8 text-xs font-semibold w-32">修改时间</TableHead>}
+                  <TableHead className="h-8 text-xs font-semibold">路径</TableHead>
                 </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+              </TableHeader>
+              <TableBody>
+                {filteredFiles.map((file, index) => (
+                  <TableRow
+                    key={index}
+                    className="group cursor-pointer border-border/50 hover:bg-accent/50 transition-colors"
+                  >
+                    <TableCell className="py-1.5 px-3">
+                      {file.file_type === "d" ? (
+                        <Badge
+                          variant="outline"
+                          className="h-5 gap-1 px-1.5 text-[10px] border-chart-3/50 bg-chart-3/10 text-chart-3 font-medium"
+                        >
+                          <FolderOpen className="h-2.5 w-2.5" />d
+                        </Badge>
+                      ) : (
+                        <Badge
+                          variant="outline"
+                          className="h-5 gap-1 px-1.5 text-[10px] border-primary/50 bg-primary/10 text-primary font-medium"
+                        >
+                          <File className="h-2.5 w-2.5" />-
+                        </Badge>
+                      )}
+                    </TableCell>
+                    <TableCell className="py-1.5 px-3">
+                      <code className="text-[10px] font-mono text-muted-foreground">{file.permissions}</code>
+                    </TableCell>
+                    <TableCell className="py-1.5 px-3 text-right font-mono text-xs tabular-nums">
+                      {humanReadableSize ? file.size_display : formatBytes(file.size_raw, false)}
+                    </TableCell>
+                    {showTimeInfo && (
+                      <TableCell className="py-1.5 px-3 text-xs text-muted-foreground">
+                        {conversionTime(file.created_time.secs_since_epoch)}
+                      </TableCell>
+                    )}
+                    <TableCell className="py-1.5 px-3">
+                      <span
+                        className="font-mono text-xs group-hover:text-primary transition-colors truncate block max-w-[300px]"
+                        title={showFullPath ? file.path : file.name}
+                      >
+                        {showFullPath ? file.path : file.name}
+                      </span>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+
+          )}
         </div>
 
         {/* Footer */}
