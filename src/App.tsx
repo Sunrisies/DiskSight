@@ -7,13 +7,14 @@ import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Separator } from "@/components/ui/separator"
-import { FolderOpen, File, RefreshCw, FolderSearch, Moon, Sun, HardDrive, Clock, Files, Loader2, X } from "lucide-react"
+import { FolderOpen, File, RefreshCw, FolderSearch, Moon, Sun, HardDrive, Settings, Clock, Files, Loader2, X } from "lucide-react"
 import { open } from '@tauri-apps/plugin-dialog';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { conversionTime } from 'sunrise-utils'
 import { cn } from "./lib/utils"
-
+import { SettingsDialog } from "@/components/settings-dialog"
+import { FileActions } from '@/components/file-actions'
 interface ICreatedTime {
   nanos_since_epoch: number
   secs_since_epoch: number
@@ -67,7 +68,7 @@ export default function DiskSight() {
   const [error, setError] = useState<string | null>(null)
   // 是否开启文件扫描详情
   const [showScanDetails, setShowScanDetails] = useState(false)
-
+  const [settingsOpen, setSettingsOpen] = useState(false)
   // 事件监听
   useEffect(() => {
     let unlistenStarted: UnlistenFn | undefined;
@@ -215,10 +216,16 @@ export default function DiskSight() {
               <p className="text-[10px] text-muted-foreground">DiskSight v1.0</p>
             </div>
           </div>
-          <Button variant="ghost" size="icon" onClick={() => setDarkMode(!darkMode)} className="h-7 w-7">
-            {darkMode ? <Sun className="h-3.5 w-3.5" /> : <Moon className="h-3.5 w-3.5" />}
-          </Button>
+          <div className="flex items-center gap-2.5">
+            <Button variant="ghost" size="icon" onClick={() => setSettingsOpen(true)} className="h-7 w-7">
+              <Settings className="h-3.5 w-3.5" />
+            </Button>
+            <Button variant="ghost" size="icon" onClick={() => setDarkMode(!darkMode)} className="h-7 w-7">
+              {darkMode ? <Sun className="h-3.5 w-3.5" /> : <Moon className="h-3.5 w-3.5" />}
+            </Button>
+          </div>
         </div>
+
 
         {/* Stats Row */}
         <div className="flex items-center gap-4 px-4 py-2 bg-muted/30 border-b border-border text-xs">
@@ -266,7 +273,7 @@ export default function DiskSight() {
             </div>
 
             {/* Display Content */}
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2">
               <span className="font-semibold text-muted-foreground uppercase text-[10px] tracking-wider">显示内容</span>
               <label className="flex items-center gap-1.5 cursor-pointer">
                 <Checkbox
@@ -287,7 +294,7 @@ export default function DiskSight() {
             </div>
 
             {/* Processing Options */}
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2">
               <span className="font-semibold text-muted-foreground uppercase text-[10px] tracking-wider">处理选项</span>
               <label className="flex items-center gap-1.5 cursor-pointer">
                 <Checkbox
@@ -305,7 +312,6 @@ export default function DiskSight() {
                 />
                 <span>大小排序</span>
               </label>
-              {showScanDetails} -
               <label className="flex items-center gap-1.5 cursor-pointer">
                 <Checkbox
                   checked={showScanDetails}
@@ -453,6 +459,8 @@ export default function DiskSight() {
                   <TableHead className="h-8 text-xs font-semibold w-20 text-right">大小</TableHead>
                   {showTimeInfo && <TableHead className="h-8 text-xs font-semibold w-32">修改时间</TableHead>}
                   <TableHead className="h-8 text-xs font-semibold">路径</TableHead>
+                  <TableHead className="h-8 text-xs font-semibold">操作</TableHead>
+
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -497,6 +505,10 @@ export default function DiskSight() {
                         {showFullPath ? file.path : file.name}
                       </span>
                     </TableCell>
+                    <TableCell className="py-1.5 px-3 w-10">
+                      <FileActions filePath={file.path} onRefresh={handleRefresh}></FileActions>
+                      {/* <Button className="cursor-pointer" size="sm" >删除</Button> */}
+                    </TableCell>
                   </TableRow>
                 ))}
               </TableBody>
@@ -511,6 +523,19 @@ export default function DiskSight() {
           <span>© 2025 All rights reserved</span>
         </div>
       </div>
+      {/* Settings Dialog */}
+      <SettingsDialog
+        open={settingsOpen}
+        onOpenChange={setSettingsOpen}
+        darkMode={darkMode}
+        onDarkModeChange={setDarkMode}
+        defaultPath={currentPath}
+        onDefaultPathChange={setCurrentPath}
+        parallelByDefault={parallelProcessing}
+        onParallelByDefaultChange={setParallelProcessing}
+        showHiddenByDefault={showHiddenFiles}
+        onShowHiddenByDefaultChange={setShowHiddenFiles}
+      />
     </div>
   )
 }
