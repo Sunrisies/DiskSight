@@ -16,7 +16,15 @@
         "width": 800,
         "height": 600,
         "center": true,
-        "decorations": true
+        "decorations": true,
+        "visible": false
+      },
+      {
+        "label": "splashscreen",
+        "url": "/splashscreen",
+        "width": 800,
+        "height": 600,
+        "center": true
       }
     ],
     "security": {
