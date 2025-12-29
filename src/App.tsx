@@ -69,6 +69,12 @@ export default function DiskSight() {
   // 是否开启文件扫描详情
   const [showScanDetails, setShowScanDetails] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+
+  // 新增状态：历史记录和文件详情
+  const [history, setHistory] = useState<string[]>([])
+  const [historyIndex, setHistoryIndex] = useState(-1)
+  const [showFileDetail, setShowFileDetail] = useState(false)
+  const [selectedFile, setSelectedFile] = useState<FileItem | null>(null)
   // 事件监听
   useEffect(() => {
     let unlistenStarted: UnlistenFn | undefined;
@@ -174,6 +180,11 @@ export default function DiskSight() {
     })
 
     if (selected) {
+      // 如果是第一次选择目录，初始化历史记录
+      if (history.length === 0) {
+        setHistory([selected])
+        setHistoryIndex(0)
+      }
       await fetchDirectory(selected)
     }
   }
@@ -200,6 +211,58 @@ export default function DiskSight() {
       'processing_file': '处理文件'
     }
     return statusMap[status] || status
+  }
+
+  // 处理表格行点击
+  const handleTableRowClick = useCallback((file: FileItem) => {
+    if (file.file_type === "d") {
+      // 如果是目录，进入该目录
+      const newPath = file.path
+
+      // 更新历史记录
+      const newHistory = history.slice(0, historyIndex + 1)
+      newHistory.push(newPath)
+      setHistory(newHistory)
+      setHistoryIndex(newHistory.length - 1)
+
+      // 加载新目录
+      fetchDirectory(newPath)
+    } else {
+      // 如果是文件，显示文件详情
+      setSelectedFile(file)
+      setShowFileDetail(true)
+    }
+  }, [history, historyIndex, fetchDirectory])
+
+  // 回退功能
+  const navigateBack = useCallback(() => {
+    if (historyIndex > 0) {
+      const newIndex = historyIndex - 1
+      const prevPath = history[newIndex]
+      setHistoryIndex(newIndex)
+      fetchDirectory(prevPath)
+    }
+  }, [history, historyIndex, fetchDirectory])
+
+  // 前进功能（如果需要）
+  const navigateForward = useCallback(() => {
+    if (historyIndex < history.length - 1) {
+      const newIndex = historyIndex + 1
+      const nextPath = history[newIndex]
+      setHistoryIndex(newIndex)
+      fetchDirectory(nextPath)
+    }
+  }, [history, historyIndex, fetchDirectory])
+
+  // 是否可以回退
+  const canGoBack = historyIndex > 0
+  // 是否可以前进
+  const canGoForward = historyIndex < history.length - 1
+
+  // 关闭文件详情弹窗
+  const closeFileDetail = () => {
+    setShowFileDetail(false)
+    setSelectedFile(null)
   }
 
   return (
@@ -331,17 +394,39 @@ export default function DiskSight() {
         {/* Path Navigation */}
         <div className="flex items-center gap-2 px-4 py-2 border-b border-border">
           <span className="text-xs text-muted-foreground shrink-0">当前目录:</span>
-          <Input
-            value={currentPath}
-            onChange={(e) => setCurrentPath(e.target.value)}
-            onKeyPress={(e) => {
-              if (e.key === 'Enter') {
-                fetchDirectory(currentPath)
-              }
-            }}
-            className="h-7 flex-1 font-mono text-xs px-2"
-            placeholder="输入目录路径或点击浏览选择"
-          />
+          <div className="flex items-center gap-1 flex-1">
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 px-2 text-xs gap-1.5"
+              onClick={navigateBack}
+              disabled={!canGoBack || isLoading}
+              title="回退"
+            >
+              ←
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 px-2 text-xs gap-1.5"
+              onClick={navigateForward}
+              disabled={!canGoForward || isLoading}
+              title="前进"
+            >
+              →
+            </Button>
+            <Input
+              value={currentPath}
+              onChange={(e) => setCurrentPath(e.target.value)}
+              onKeyPress={(e) => {
+                if (e.key === 'Enter') {
+                  fetchDirectory(currentPath)
+                }
+              }}
+              className="h-7 flex-1 font-mono text-xs px-2"
+              placeholder="输入目录路径或点击浏览选择"
+            />
+          </div>
           <Button
             variant="outline"
             size="sm"
@@ -468,6 +553,7 @@ export default function DiskSight() {
                   <TableRow
                     key={index}
                     className="group cursor-pointer border-border/50 hover:bg-accent/50 transition-colors"
+                    onClick={() => handleTableRowClick(file)}
                   >
                     <TableCell className="py-1.5 px-3">
                       {file.file_type === "d" ? (
@@ -506,8 +592,9 @@ export default function DiskSight() {
                       </span>
                     </TableCell>
                     <TableCell className="py-1.5 px-3 w-10">
-                      <FileActions filePath={file.path} onRefresh={handleRefresh}></FileActions>
-                      {/* <Button className="cursor-pointer" size="sm" >删除</Button> */}
+                      <div onClick={(e) => e.stopPropagation()}>
+                        <FileActions filePath={file.path} onRefresh={handleRefresh}></FileActions>
+                      </div>
                     </TableCell>
                   </TableRow>
                 ))}
@@ -536,6 +623,66 @@ export default function DiskSight() {
         showHiddenByDefault={showHiddenFiles}
         onShowHiddenByDefaultChange={setShowHiddenFiles}
       />
+
+      {/* 文件详情弹窗 */}
+      {showFileDetail && selectedFile && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50" onClick={closeFileDetail}>
+          <div className="bg-card rounded-lg border shadow-lg max-w-md w-full mx-4 p-6" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="font-semibold text-sm">文件详情</h3>
+              <Button variant="ghost" size="sm" onClick={closeFileDetail} className="h-6 w-6 p-0">
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+
+            <div className="space-y-3 text-xs">
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">名称:</span>
+                <span className="font-medium">{selectedFile.name}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">类型:</span>
+                <span className="font-medium">
+                  {selectedFile.file_type === "d" ? "目录" : "文件"}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">路径:</span>
+                <span className="font-medium font-mono break-all">{selectedFile.path}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">大小:</span>
+                <span className="font-medium font-mono">
+                  {humanReadableSize ? selectedFile.size_display : formatBytes(selectedFile.size_raw, false)}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">权限:</span>
+                <span className="font-medium font-mono">{selectedFile.permissions}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">创建时间:</span>
+                <span className="font-medium">
+                  {conversionTime(selectedFile.created_time.secs_since_epoch)}
+                </span>
+              </div>
+            </div>
+
+            <div className="mt-6 flex justify-end gap-2">
+              <Button variant="outline" size="sm" onClick={closeFileDetail}>
+                关闭
+              </Button>
+              <Button size="sm" onClick={() => {
+                // 复制路径到剪贴板
+                navigator.clipboard.writeText(selectedFile.path)
+                closeFileDetail()
+              }}>
+                复制路径
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
