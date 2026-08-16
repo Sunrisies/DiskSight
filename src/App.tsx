@@ -96,11 +96,13 @@ export default function DiskSight() {
 
         unlistenCompleted = await listen('scan-completed', () => {
           setIsLoading(false);
+          setIsRefreshing(false);
           setScanProgress(null);
         });
 
         unlistenError = await listen('scan-error', (event) => {
           setIsLoading(false);
+          setIsRefreshing(false);
           setScanProgress(null);
           setError(event.payload as string);
         });
@@ -134,44 +136,47 @@ export default function DiskSight() {
     return filteredFiles.reduce((acc, f) => acc + f.size_raw, 0)
   }, [filteredFiles])
 
-  const handleRefresh = useCallback(() => {
-    console.log("Refreshing...", showScanDetails)
-    if (currentPath) {
-      setIsRefreshing(true)
-      fetchDirectory(currentPath, showScanDetails)
-      setTimeout(() => setIsRefreshing(false), 500)
-    }
-  }, [currentPath, showScanDetails])
-
   const fetchDirectory = useCallback(async (path: string, showDetails: boolean = false) => {
     if (!path) return
 
     setIsLoading(true)
+    setIsRefreshing(true)
     setError(null)
     let result: DirectoryResult
     console.log("Fetching directory:", path, showScanDetails)
     try {
+      const params = {
+        path,
+        parallel: parallelProcessing,
+        sort: sortBySize,
+        humanReadable: humanReadableSize,
+        showHiddenFiles: showHiddenFiles,
+      }
+
       if (showDetails) {
-        result = await invoke<DirectoryResult>("get_list_directory", {
-          path,
-        })
+        result = await invoke<DirectoryResult>("get_list_directory", params)
       } else {
-        result = await invoke<DirectoryResult>("calculate_dir_size_simple_fast", {
-          path,
-        })
-        setIsLoading(false);
-        setScanProgress(null);
+        result = await invoke<DirectoryResult>("calculate_dir_size_simple_fast", params)
       }
 
       setFiles(result.entries)
       setCurrentPath(path)
-      console.log("Directory fetched:", result)
       setRefreshTime(Number(result.query_time.toFixed(2)))
     } catch (err) {
       console.error("Failed to fetch directory:", err)
       setError(err instanceof Error ? err.message : "获取目录失败")
+    } finally {
+      setIsLoading(false)
+      setIsRefreshing(false)
+      setScanProgress(null)
     }
-  }, [parallelProcessing, humanReadableSize, showHiddenFiles, sortBySize, showTimeInfo, showFullPath])
+  }, [parallelProcessing, humanReadableSize, showHiddenFiles, sortBySize])
+
+  const handleRefresh = useCallback(() => {
+    if (currentPath) {
+      fetchDirectory(currentPath, showScanDetails)
+    }
+  }, [currentPath, showScanDetails, fetchDirectory])
 
   // 选择目录
   const handleSelectFile = async () => {
@@ -190,10 +195,10 @@ export default function DiskSight() {
   }
 
   // 取消扫描
-  const handleCancelScan = () => {
+  const handleCancelScan = async () => {
+    await invoke("cancel_scan")
     setIsLoading(false)
     setScanProgress(null)
-    // 注意：这里需要后端支持取消操作，目前只是前端状态重置
   }
 
   // 获取状态显示文本

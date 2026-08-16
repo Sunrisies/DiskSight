@@ -5,23 +5,19 @@ use super::utils::{human_readable_size, progress_bar_init};
 use indicatif::ProgressBar;
 use rayon::prelude::*;
 use std::fs;
-use std::io::Error;
+use std::io::{Error, ErrorKind};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::SystemTime;
 use tauri::AppHandle;
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn it_works() {
-        assert_eq!(2 + 2, 4);
-    }
-}
-
-// 使用事件系统的目录列表函数
 pub fn list_directory_with_events(
     path: &Path,
     args: &Cli,
     app_handle: &AppHandle,
+    abort: Arc<AtomicBool>,
+    show_hidden: bool,
 ) -> Result<Vec<FileEntry>, Error> {
     let entries = match fs::read_dir(path) {
         Ok(entries) => entries,
@@ -33,26 +29,37 @@ pub fn list_directory_with_events(
 
     let mut files: Vec<String> = Vec::new();
     for entry in entries.flatten() {
+        if abort.load(Ordering::SeqCst) {
+            return Err(Error::new(ErrorKind::Other, "扫描已取消"));
+        }
         let file_name = entry.file_name().to_string_lossy().to_string();
+        if !show_hidden && file_name.starts_with('.') {
+            continue;
+        }
         files.push(file_name);
     }
-    let sorted_files = files.clone();
-    files.sort();
-    let total_files = sorted_files.len();
+
+    let total_files = files.len();
     let mut entries = Vec::new();
 
     if args.long_format {
         let process_pb = progress_bar_init(None).unwrap();
         process_pb.set_message("处理中...");
 
-        for (index, file) in sorted_files.iter().enumerate() {
-            // 发送处理进度事件
-            emit_progress(app_handle, path, Path::new(file), "processing");
+        for (index, file) in files.iter().enumerate() {
+            if abort.load(Ordering::SeqCst) {
+                process_pb.finish_and_clear();
+                emit_progress(app_handle, path, path, "cancelled");
+                return Err(Error::new(
+                    ErrorKind::Other,
+                    "扫描已取消",
+                ));
+            }
 
+            emit_progress(app_handle, path, Path::new(file), "processing");
             process_pb.tick();
             let file_path = path.join(file);
 
-            // 只在处理大文件或每10%进度时报告
             if index % std::cmp::max(1, total_files / 10) == 0 {
                 emit_progress(
                     app_handle,
@@ -81,6 +88,7 @@ pub fn list_directory_with_events(
                                 name,
                                 &mut entries,
                                 app_handle,
+                                abort.clone(),
                             );
                             continue;
                         }
@@ -99,7 +107,6 @@ pub fn list_directory_with_events(
             };
 
             let (size_display, size_raw) = if metadata.is_dir() {
-                // 发送开始计算目录大小事件
                 emit_progress(app_handle, path, &file_path, "calculating_directory_size");
 
                 let (raw, converted) = calculate_dir_size_with_events_simple(
@@ -108,15 +115,18 @@ pub fn list_directory_with_events(
                     &process_pb,
                     args.parallel,
                     app_handle,
+                    abort.clone(),
                 );
 
-                // 发送完成目录计算事件
-                emit_progress(
-                    app_handle,
-                    path,
-                    &file_path,
-                    "directory_calculation_completed",
-                );
+                if abort.load(Ordering::SeqCst) {
+                    process_pb.finish_and_clear();
+                    return Err(Error::new(
+                        ErrorKind::Other,
+                        "扫描已取消",
+                    ));
+                }
+
+                emit_progress(app_handle, path, &file_path, "directory_calculation_completed");
                 (converted, raw)
             } else if args.human_readable {
                 (human_readable_size(metadata.len()), metadata.len())
@@ -147,10 +157,9 @@ pub fn list_directory_with_events(
                     Err(_e) => file_path.to_string_lossy().into_owned(),
                 },
                 name: file.to_string(),
-                created_time: metadata.created()?,
+                created_time: metadata.created().unwrap_or(SystemTime::UNIX_EPOCH),
             });
 
-            // 发送完成当前文件事件
             emit_progress(app_handle, path, &file_path, "completed");
         }
 
@@ -168,7 +177,6 @@ pub fn list_directory_with_events(
     Ok(entries)
 }
 
-// 使用事件系统的目录搜索函数
 fn calculate_dir_size_with_events(
     file_path: PathBuf,
     human_readable: bool,
@@ -177,7 +185,12 @@ fn calculate_dir_size_with_events(
     name: &str,
     entries: &mut Vec<FileEntry>,
     app_handle: &AppHandle,
+    abort: Arc<AtomicBool>,
 ) {
+    if abort.load(Ordering::SeqCst) {
+        return;
+    }
+
     let sub_path_str = file_path.display().to_string();
     let sub_path = Path::new(&sub_path_str);
 
@@ -192,6 +205,9 @@ fn calculate_dir_size_with_events(
     };
 
     for entry in sub_entries.flatten() {
+        if abort.load(Ordering::SeqCst) {
+            return;
+        }
         let file_name = entry.file_name().to_string_lossy().to_string();
         let metadata = match entry.metadata() {
             Ok(m) => m,
@@ -214,15 +230,11 @@ fn calculate_dir_size_with_events(
                     name,
                     entries,
                     app_handle,
+                    abort.clone(),
                 );
                 continue;
             } else {
-                emit_progress(
-                    app_handle,
-                    sub_path,
-                    &file_path,
-                    "calculating_matching_directory",
-                );
+                emit_progress(app_handle, sub_path, &file_path, "calculating_matching_directory");
 
                 let (raw, converted) = calculate_dir_size_with_events_simple(
                     &file_path,
@@ -230,7 +242,12 @@ fn calculate_dir_size_with_events(
                     pb,
                     parallel,
                     app_handle,
+                    abort.clone(),
                 );
+
+                if abort.load(Ordering::SeqCst) {
+                    return;
+                }
 
                 entries.push(FileEntry {
                     file_type: if metadata.is_dir() { 'd' } else { '-' },
@@ -258,38 +275,44 @@ fn calculate_dir_size_with_events(
                         }
                     },
                     name: file_name,
-                    created_time: metadata.created().unwrap_or(std::time::SystemTime::now()),
+                    created_time: metadata.created().unwrap_or(SystemTime::UNIX_EPOCH),
                 });
 
-                emit_progress(
-                    app_handle,
-                    sub_path,
-                    &file_path,
-                    "matching_directory_completed",
-                );
+                emit_progress(app_handle, sub_path, &file_path, "matching_directory_completed");
             }
         }
     }
 }
 
-// 使用事件系统的目录大小计算函数
 pub fn calculate_dir_size_with_events_simple(
     path: &Path,
     human_readable: bool,
     main_pb: &ProgressBar,
     parallel: bool,
     app_handle: &AppHandle,
+    abort: Arc<AtomicBool>,
 ) -> (u64, String) {
-    fn inner_calculate(p: &Path, pb: &ProgressBar, parallel: bool, app_handle: &AppHandle) -> u64 {
+    fn inner_calculate(
+        p: &Path,
+        pb: &ProgressBar,
+        parallel: bool,
+        app_handle: &AppHandle,
+        abort: Arc<AtomicBool>,
+    ) -> u64 {
+        if abort.load(Ordering::SeqCst) {
+            return 0;
+        }
         match fs::read_dir(p) {
             Ok(entries) => {
                 let mut total_size = 0;
                 let entries: Vec<_> = entries
                     .filter_map(|e| {
                         pb.tick();
+                        if abort.load(Ordering::SeqCst) {
+                            return None;
+                        }
                         match e {
                             Ok(entry) => {
-                                // 发送处理文件事件
                                 emit_progress(app_handle, p, &entry.path(), "processing_file");
                                 Some(entry)
                             }
@@ -304,12 +327,12 @@ pub fn calculate_dir_size_with_events_simple(
                 if parallel {
                     total_size += entries
                         .par_iter()
-                        .map(|e| process_entry_with_events(e, pb, parallel, app_handle))
+                        .map(|e| process_entry_with_events(e, pb, parallel, app_handle, abort.clone()))
                         .sum::<u64>();
                 } else {
                     total_size += entries
                         .iter()
-                        .map(|e| process_entry_with_events(e, pb, parallel, app_handle))
+                        .map(|e| process_entry_with_events(e, pb, parallel, app_handle, abort.clone()))
                         .sum::<u64>();
                 }
 
@@ -327,11 +350,15 @@ pub fn calculate_dir_size_with_events_simple(
         pb: &ProgressBar,
         parallel: bool,
         app_handle: &AppHandle,
+        abort: Arc<AtomicBool>,
     ) -> u64 {
+        if abort.load(Ordering::SeqCst) {
+            return 0;
+        }
         match e.metadata() {
             Ok(metadata) => {
                 if metadata.is_dir() {
-                    inner_calculate(&e.path(), pb, parallel, app_handle)
+                    inner_calculate(&e.path(), pb, parallel, app_handle, abort)
                 } else {
                     metadata.len()
                 }
@@ -346,7 +373,10 @@ pub fn calculate_dir_size_with_events_simple(
     main_pb.set_message(format!("计算 {}...", path.display()));
     emit_progress(app_handle, path, path, "calculating_directory_size");
 
-    let total = inner_calculate(path, main_pb, parallel, app_handle);
+    let total = inner_calculate(path, main_pb, parallel, app_handle, abort.clone());
+    if abort.load(Ordering::SeqCst) {
+        return (0, String::from("已取消"));
+    }
     main_pb.set_message("处理中...");
 
     let converted = if human_readable {
