@@ -32,7 +32,7 @@ pub struct FileEntry {
     pub name: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct DirectoryResult {
     pub entries: Vec<FileEntry>,
     pub query_time: f64,

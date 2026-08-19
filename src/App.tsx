@@ -104,7 +104,8 @@ export default function DiskSight() {
           setIsLoading(false);
           setIsRefreshing(false);
           setScanProgress(null);
-          setError(event.payload as string);
+          const msg = event.payload as string
+          if (msg) setError(msg)
         });
       } catch (error) {
         console.error('Failed to setup event listeners:', error);
@@ -136,7 +137,11 @@ export default function DiskSight() {
     return filteredFiles.reduce((acc, f) => acc + f.size_raw, 0)
   }, [filteredFiles])
 
-  const fetchDirectory = useCallback(async (path: string, showDetails: boolean = false) => {
+  const fetchDirectory = useCallback(async (
+    path: string,
+    showDetails: boolean = false,
+    forceRefresh: boolean = false,
+  ) => {
     if (!path) return
 
     setIsLoading(true)
@@ -147,11 +152,19 @@ export default function DiskSight() {
     try {
       const params = {
         path,
-        parallel: parallelProcessing,
+        // Detailed progress must be ordered; parallel workers otherwise report
+        // unrelated files in a nondeterministic order.
+        parallel: showDetails ? false : parallelProcessing,
         sort: sortBySize,
         humanReadable: humanReadableSize,
         showHiddenFiles: showHiddenFiles,
+        forceRefresh,
       }
+      setScanProgress(showDetails ? {
+        current_path: path,
+        current_file: "",
+        status: "processing",
+      } : null)
 
       if (showDetails) {
         result = await invoke<DirectoryResult>("get_list_directory", params)
@@ -163,8 +176,13 @@ export default function DiskSight() {
       setCurrentPath(path)
       setRefreshTime(Number(result.query_time.toFixed(2)))
     } catch (err) {
+      const msg = err instanceof Error ? err.message : ""
       console.error("Failed to fetch directory:", err)
-      setError(err instanceof Error ? err.message : "获取目录失败")
+      if (msg.startsWith("SCAN_CANCELLED")) {
+        // 用户主动取消，不显示错误
+      } else {
+        setError(msg || "获取目录失败")
+      }
     } finally {
       setIsLoading(false)
       setIsRefreshing(false)
@@ -190,14 +208,16 @@ export default function DiskSight() {
         setHistory([selected])
         setHistoryIndex(0)
       }
-      await fetchDirectory(selected)
+      await fetchDirectory(selected, showScanDetails)
     }
   }
 
   // 取消扫描
   const handleCancelScan = async () => {
     await invoke("cancel_scan")
+    setError(null)
     setIsLoading(false)
+    setIsRefreshing(false)
     setScanProgress(null)
   }
 
@@ -213,7 +233,10 @@ export default function DiskSight() {
       'checking_file': '检查文件',
       'calculating_matching_directory': '计算匹配目录',
       'matching_directory_completed': '匹配目录完成',
-      'processing_file': '处理文件'
+      'processing_file': '处理文件',
+      'searching': '搜索目录',
+      'cancelled': '已取消',
+      'cache_hit': '使用缓存结果'
     }
     return statusMap[status] || status
   }
@@ -231,13 +254,13 @@ export default function DiskSight() {
       setHistoryIndex(newHistory.length - 1)
 
       // 加载新目录
-      fetchDirectory(newPath)
+      fetchDirectory(newPath, showScanDetails)
     } else {
       // 如果是文件，显示文件详情
       setSelectedFile(file)
       setShowFileDetail(true)
     }
-  }, [history, historyIndex, fetchDirectory])
+  }, [history, historyIndex, showScanDetails, fetchDirectory])
 
   // 回退功能
   const navigateBack = useCallback(() => {
@@ -245,9 +268,9 @@ export default function DiskSight() {
       const newIndex = historyIndex - 1
       const prevPath = history[newIndex]
       setHistoryIndex(newIndex)
-      fetchDirectory(prevPath)
+      fetchDirectory(prevPath, showScanDetails)
     }
-  }, [history, historyIndex, fetchDirectory])
+  }, [history, historyIndex, showScanDetails, fetchDirectory])
 
   // 前进功能（如果需要）
   const navigateForward = useCallback(() => {
@@ -255,9 +278,9 @@ export default function DiskSight() {
       const newIndex = historyIndex + 1
       const nextPath = history[newIndex]
       setHistoryIndex(newIndex)
-      fetchDirectory(nextPath)
+      fetchDirectory(nextPath, showScanDetails)
     }
-  }, [history, historyIndex, fetchDirectory])
+  }, [history, historyIndex, showScanDetails, fetchDirectory])
 
   // 是否可以回退
   const canGoBack = historyIndex > 0
@@ -425,7 +448,7 @@ export default function DiskSight() {
               onChange={(e) => setCurrentPath(e.target.value)}
               onKeyPress={(e) => {
                 if (e.key === 'Enter') {
-                  fetchDirectory(currentPath)
+                  fetchDirectory(currentPath, showScanDetails)
                 }
               }}
               className="h-7 flex-1 font-mono text-xs px-2"

@@ -1,22 +1,20 @@
-pub mod dir_listing;
 pub mod dir_listing_v2;
 pub mod models;
 pub mod utils;
-pub use dir_listing::*;
 pub use dir_listing_v2::*;
 pub use models::*;
+pub use utils::*;
 use std::fs;
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Mutex;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use tauri::async_runtime::spawn;
-use tauri::async_runtime::spawn_blocking;
+use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
+use tauri::async_runtime::{spawn, spawn_blocking};
 use tauri::Emitter;
 use tauri::{AppHandle, Manager, State};
-
 use tokio::time::{sleep, Duration};
-pub use utils::*;
 
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -30,8 +28,17 @@ async fn calculate_dir_size_simple_fast(
     sort: bool,
     human_readable: bool,
     show_hidden_files: bool,
+    force_refresh: bool,
     state: State<'_, ScanState>,
+    cache: State<'_, ScanCache>,
 ) -> Result<DirectoryResult, String> {
+    let cache_key = ScanCacheKey::new(&path, parallel, sort, human_readable, show_hidden_files);
+    if !force_refresh {
+        if let Some(result) = cache.get(&cache_key) {
+            return Ok(result);
+        }
+    }
+
     let cli = Cli {
         file: None,
         long_format: true,
@@ -45,8 +52,9 @@ async fn calculate_dir_size_simple_fast(
     };
 
     let abort = state.abort.clone();
+    state.abort.store(false, Ordering::SeqCst);
     let start_time = std::time::Instant::now();
-    let result = spawn_blocking(move || match list_directory(Path::new(&path), &cli, abort, show_hidden_files) {
+    let result = spawn_blocking(move || match list_directory(Path::new(&path), &cli, &abort, show_hidden_files) {
         Ok(entries) => {
             let elapsed = start_time.elapsed().as_secs_f64();
             Ok(DirectoryResult {
@@ -54,23 +62,22 @@ async fn calculate_dir_size_simple_fast(
                 query_time: elapsed,
             })
         }
-        Err(e) => Err(format!("Error listing directory: {}", e)),
+        Err(e) => {
+                if e.to_string().contains("扫描已取消") {
+                    Err(format!("SCAN_CANCELLED: 扫描已取消"))
+                } else {
+                    Err(format!("Error listing directory: {}", e))
+                }
+            }
     })
     .await
     .map_err(|e| format!("Failed to execute blocking task: {}", e))?;
 
-    result
-}
+    if let Ok(ref directory_result) = result {
+        cache.insert(cache_key, directory_result.clone());
+    }
 
-fn emit_progress(app_handle: &AppHandle, current_path: &Path, current_file: &Path, status: &str) {
-    let _ = app_handle.emit(
-        "scan-progress",
-        ProgressEvent {
-            current_path: current_path.to_string_lossy().to_string(),
-            current_file: current_file.to_string_lossy().to_string(),
-            status: status.to_string(),
-        },
-    );
+    result
 }
 
 #[tauri::command]
@@ -80,12 +87,27 @@ async fn get_list_directory(
     sort: bool,
     human_readable: bool,
     show_hidden_files: bool,
+    force_refresh: bool,
     app_handle: AppHandle,
     state: State<'_, ScanState>,
+    cache: State<'_, ScanCache>,
 ) -> Result<DirectoryResult, String> {
     let start_time = std::time::Instant::now();
     let app_handle_clone = app_handle.clone();
     let _ = app_handle.emit("scan-started", ());
+
+    let cache_key = ScanCacheKey::new(&path, parallel, sort, human_readable, show_hidden_files);
+    if !force_refresh {
+        if let Some(result) = cache.get(&cache_key) {
+            let _ = app_handle_clone.emit("scan-progress", ProgressEvent {
+                current_path: path,
+                current_file: String::new(),
+                status: "cache_hit".to_string(),
+            });
+            let _ = app_handle_clone.emit("scan-completed", ());
+            return Ok(result);
+        }
+    }
 
     let abort = state.abort.clone();
     state.abort.store(false, Ordering::SeqCst);
@@ -104,7 +126,7 @@ async fn get_list_directory(
             full_path: true,
         };
 
-        list_directory_with_events(Path::new(&path), &cli, &app_handle_inner, abort, show_hidden_files)
+        list_directory_with_events(Path::new(&path), &cli, &app_handle_inner, &abort, show_hidden_files)
     })
     .await
     .map_err(|e| format!("Failed to execute blocking task: {}", e))?;
@@ -113,14 +135,21 @@ async fn get_list_directory(
         Ok(entries) => {
             let _ = app_handle_clone.emit("scan-completed", ());
             let elapsed = start_time.elapsed().as_secs_f64();
-            Ok(DirectoryResult {
+            let directory_result = DirectoryResult {
                 entries,
                 query_time: elapsed,
-            })
+            };
+            cache.insert(cache_key, directory_result.clone());
+            Ok(directory_result)
         }
         Err(e) => {
-            let _ = app_handle_clone.emit("scan-error", e.to_string());
-            Err(format!("Error listing directory: {}", e))
+            if e.to_string().contains("扫描已取消") {
+                let _ = app_handle_clone.emit("scan-error", String::new());
+                Err(format!("SCAN_CANCELLED: 扫描已取消"))
+            } else {
+                let _ = app_handle_clone.emit("scan-error", e.to_string());
+                Err(format!("Error listing directory: {}", e))
+            }
         }
     }
 }
@@ -132,7 +161,11 @@ async fn cancel_scan(state: State<'_, ScanState>) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn delete_file(path: String, force: bool) -> Result<(), String> {
+async fn delete_file(
+    path: String,
+    force: bool,
+    cache: State<'_, ScanCache>,
+) -> Result<(), String> {
     let path = Path::new(&path);
 
     if !path.exists() {
@@ -164,7 +197,10 @@ async fn delete_file(path: String, force: bool) -> Result<(), String> {
     };
 
     match result {
-        Ok(_) => Ok(()),
+        Ok(_) => {
+            cache.invalidate_for_path(path);
+            Ok(())
+        }
         Err(e) => match e.raw_os_error() {
             Some(5) => Err("权限不足，请以管理员身份运行程序或检查路径权限".to_string()),
             Some(32) => Err("文件或目录正在被其他程序使用".to_string()),
@@ -184,6 +220,109 @@ struct ScanState {
     abort: Arc<AtomicBool>,
 }
 
+#[derive(Clone, Hash, PartialEq, Eq)]
+struct ScanCacheKey {
+    path: String,
+    parallel: bool,
+    sort: bool,
+    human_readable: bool,
+    show_hidden_files: bool,
+}
+
+impl ScanCacheKey {
+    fn new(path: &str, parallel: bool, sort: bool, human_readable: bool, show_hidden_files: bool) -> Self {
+        Self {
+            path: normalize_cache_path(path),
+            parallel,
+            sort,
+            human_readable,
+            show_hidden_files,
+        }
+    }
+}
+
+struct CachedDirectoryResult {
+    result: DirectoryResult,
+}
+
+struct ScanCache {
+    entries: Arc<Mutex<HashMap<ScanCacheKey, CachedDirectoryResult>>>,
+    watchers: Mutex<HashMap<String, RecommendedWatcher>>,
+}
+
+impl ScanCache {
+    fn get(&self, key: &ScanCacheKey) -> Option<DirectoryResult> {
+        let entries = self.entries.lock().unwrap();
+        let result = entries.get(key).map(|value| value.result.clone());
+        if result.is_some() {
+            println!("Scan cache hit: {}", key.path);
+        }
+        result
+    }
+
+    fn insert(&self, key: ScanCacheKey, result: DirectoryResult) {
+        let root = key.path.clone();
+        self.entries.lock().unwrap().insert(
+            key,
+            CachedDirectoryResult {
+                result,
+            },
+        );
+        self.ensure_watcher(&root);
+    }
+
+    fn invalidate_for_path(&self, changed_path: &Path) {
+        let changed_path = normalize_cache_path(&changed_path.to_string_lossy());
+        self.entries.lock().unwrap().retain(|key, _| {
+            !is_same_or_child_path(&changed_path, &key.path)
+                && !is_same_or_child_path(&key.path, &changed_path)
+        });
+    }
+
+    fn ensure_watcher(&self, root: &str) {
+        let mut watchers = self.watchers.lock().unwrap();
+        if watchers.contains_key(root) {
+            return;
+        }
+
+        let entries = Arc::clone(&self.entries);
+        let callback_root = root.to_string();
+        let watcher = RecommendedWatcher::new(
+            move |event: notify::Result<notify::Event>| {
+                let Ok(event) = event else { return };
+                for changed in event.paths {
+                    let changed = normalize_cache_path(&changed.to_string_lossy());
+                    if is_same_or_child_path(&changed, &callback_root)
+                        || is_same_or_child_path(&callback_root, &changed)
+                    {
+                        entries.lock().unwrap().retain(|key, _| {
+                            !is_same_or_child_path(&changed, &key.path)
+                                && !is_same_or_child_path(&key.path, &changed)
+                        });
+                    }
+                }
+            },
+            Config::default(),
+        );
+
+        let Ok(mut watcher) = watcher else { return };
+        if watcher.watch(Path::new(root), RecursiveMode::Recursive).is_ok() {
+            watchers.insert(root.to_string(), watcher);
+        }
+    }
+}
+
+fn normalize_cache_path(path: &str) -> String {
+    path.replace('/', "\\").trim_end_matches('\\').to_ascii_lowercase()
+}
+
+fn is_same_or_child_path(path: &str, parent: &str) -> bool {
+    path == parent
+        || path
+            .strip_prefix(parent)
+            .is_some_and(|suffix| suffix.starts_with('\\'))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -193,6 +332,10 @@ pub fn run() {
         }))
         .manage(ScanState {
             abort: Arc::new(AtomicBool::new(false)),
+        })
+        .manage(ScanCache {
+            entries: Arc::new(Mutex::new(HashMap::new())),
+            watchers: Mutex::new(HashMap::new()),
         })
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_positioner::init())

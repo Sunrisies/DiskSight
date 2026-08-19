@@ -19,6 +19,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 indicatif = "0.18.0"
 rayon = "1.11.0"
+notify = "8.2.0"
 tauri = { version = "2.11", features = [] }
 tauri-plugin-opener = "2.5"
 serde = { version = "1", features = ["derive"] }
